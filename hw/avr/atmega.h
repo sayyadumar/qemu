@@ -22,6 +22,10 @@
 #define TYPE_ATMEGA328_MCU  "ATmega328"
 #define TYPE_ATMEGA1280_MCU "ATmega1280"
 #define TYPE_ATMEGA2560_MCU "ATmega2560"
+#define TYPE_ATMEGA164_MCU "ATmega164"
+#define TYPE_ATMEGA324_MCU "ATmega324"
+#define TYPE_ATMEGA644_MCU "ATmega644"
+#define TYPE_ATMEGA1284_MCU "ATmega1284"
 
 typedef struct AtmegaMcuState AtmegaMcuState;
 DECLARE_INSTANCE_CHECKER(AtmegaMcuState, ATMEGA_MCU,

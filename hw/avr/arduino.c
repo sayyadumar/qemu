@@ -114,6 +114,36 @@ static void arduino_mega_class_init(ObjectClass *oc, void *data)
     amc->xtal_hz    = 16 * 1000 * 1000;
 };
 
+static void arduino_generic1284_class_init(ObjectClass *oc, void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    ArduinoMachineClass *amc = ARDUINO_MACHINE_CLASS(oc);
+
+    /*
+     * https://store.arduino.cc/arduino-mega-2560-rev3
+     * https://www.arduino.cc/en/uploads/Main/arduino-mega2560_R3-sch.pdf
+     */
+    mc->desc        = "Generic atmega1284(20Mhz) (ATmega1284)";
+    mc->alias       = "mega1284";
+    amc->mcu_type   = TYPE_ATMEGA1284_MCU;
+    amc->xtal_hz    = 20 * 1000 * 1000; /* 20Mhz */
+};
+
+static void arduino_generic644_class_init(ObjectClass *oc, void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    ArduinoMachineClass *amc = ARDUINO_MACHINE_CLASS(oc);
+
+    /*
+     * https://store.arduino.cc/arduino-mega-2560-rev3
+     * https://www.arduino.cc/en/uploads/Main/arduino-mega2560_R3-sch.pdf
+     */
+    mc->desc        = "Generic atmega644(20Mhz) (ATmega644)";
+    mc->alias       = "mega644";
+    amc->mcu_type   = TYPE_ATMEGA644_MCU;
+    amc->xtal_hz    = 20 * 1000 * 1000; /* 20Mhz */
+};
+
 static void arduino_mega2560_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -146,6 +176,14 @@ static const TypeInfo arduino_machine_types[] = {
         .name          = MACHINE_TYPE_NAME("arduino-mega-2560-v3"),
         .parent        = TYPE_ARDUINO_MACHINE,
         .class_init    = arduino_mega2560_class_init,
+    }, {
+        .name          = MACHINE_TYPE_NAME("atmega-generic-644-20Mhz"),
+        .parent        = TYPE_ARDUINO_MACHINE,
+        .class_init    = arduino_generic644_class_init,
+    }, {
+        .name          = MACHINE_TYPE_NAME("atmega-generic-1284-20Mhz"),
+        .parent        = TYPE_ARDUINO_MACHINE,
+        .class_init    = arduino_generic1284_class_init,
     }, {
         .name           = TYPE_ARDUINO_MACHINE,
         .parent         = TYPE_MACHINE,
