@@ -19,7 +19,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qemu/main-loop.h"
 
 #include "tests/qtest/libqtest.h"
@@ -180,6 +180,7 @@ static void walk_path(QOSGraphNode *orig_path, int len)
 
         fuzz_path_vec = path_vec;
     } else {
+        g_string_free(cmd_line, true);
         g_free(path_vec);
     }
 

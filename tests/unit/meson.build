@@ -47,6 +47,7 @@ tests = {
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],
+  'test-fifo': [],
 }
 
 if have_system or have_tools
@@ -99,11 +100,11 @@ if have_block
      tasn1.found() and \
      host_os != 'windows'
     tests += {
-      'test-crypto-tlscredsx509': ['crypto-tls-x509-helpers.c', 'pkix_asn1_tab.c',
+      'test-crypto-tlscredsx509': ['crypto-tls-x509-helpers.c',
                                    tasn1, crypto, gnutls],
-      'test-crypto-tlssession': ['crypto-tls-x509-helpers.c', 'pkix_asn1_tab.c', 'crypto-tls-psk-helpers.c',
+      'test-crypto-tlssession': ['crypto-tls-x509-helpers.c', 'crypto-tls-psk-helpers.c',
                                  tasn1, crypto, gnutls],
-      'test-io-channel-tls': ['io-channel-helpers.c', 'crypto-tls-x509-helpers.c', 'pkix_asn1_tab.c',
+      'test-io-channel-tls': ['io-channel-helpers.c', 'crypto-tls-x509-helpers.c',
                               tasn1, io, crypto, gnutls]}
   endif
   if pam.found()
@@ -115,15 +116,13 @@ if have_block
   if host_os != 'windows'
     tests += {
       'test-image-locking': [testblock],
-      'test-nested-aio-poll': [testblock],
+      'test-nested-aio-poll': [],
     }
   endif
   if config_host_data.get('CONFIG_REPLICATION')
     tests += {'test-replication': [testblock]}
   endif
-  if nettle.found() or gcrypt.found()
-    tests += {'test-crypto-pbkdf': [io]}
-  endif
+  tests += {'test-crypto-pbkdf': [io]}
 endif
 
 if have_system

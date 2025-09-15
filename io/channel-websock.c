@@ -351,7 +351,7 @@ static void qio_channel_websock_handshake_send_res_ok(QIOChannelWebsock *ioc,
               QIO_CHANNEL_WEBSOCK_GUID_LEN + 1);
 
     /* hash and encode it */
-    if (qcrypto_hash_base64(QCRYPTO_HASH_ALG_SHA1,
+    if (qcrypto_hash_base64(QCRYPTO_HASH_ALGO_SHA1,
                             combined_key,
                             QIO_CHANNEL_WEBSOCK_CLIENT_KEY_LEN +
                             QIO_CHANNEL_WEBSOCK_GUID_LEN,
@@ -883,6 +883,7 @@ qio_channel_websock_new_server(QIOChannel *master)
     ioc = QIO_CHANNEL(wioc);
 
     wioc->master = master;
+    ioc->follow_coroutine_ctx = master->follow_coroutine_ctx;
     if (qio_channel_has_feature(master, QIO_CHANNEL_FEATURE_SHUTDOWN)) {
         qio_channel_set_feature(ioc, QIO_CHANNEL_FEATURE_SHUTDOWN);
     }
@@ -1307,7 +1308,7 @@ static GSource *qio_channel_websock_create_watch(QIOChannel *ioc,
 }
 
 static void qio_channel_websock_class_init(ObjectClass *klass,
-                                           void *class_data G_GNUC_UNUSED)
+                                           const void *class_data G_GNUC_UNUSED)
 {
     QIOChannelClass *ioc_klass = QIO_CHANNEL_CLASS(klass);
 

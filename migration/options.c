@@ -19,16 +19,17 @@
 #include "qapi/qapi-commands-migration.h"
 #include "qapi/qapi-visit-migration.h"
 #include "qapi/qmp/qerror.h"
-#include "qapi/qmp/qnull.h"
-#include "sysemu/runstate.h"
+#include "qobject/qnull.h"
+#include "system/runstate.h"
 #include "migration/colo.h"
+#include "migration/cpr.h"
 #include "migration/misc.h"
 #include "migration.h"
 #include "migration-stats.h"
 #include "qemu-file.h"
 #include "ram.h"
 #include "options.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 
 /* Maximum migrate downtime set to 2000 seconds */
 #define MAX_MIGRATE_DOWNTIME_SECONDS 2000
@@ -55,6 +56,13 @@
 #define DEFAULT_MIGRATE_MULTIFD_COMPRESSION MULTIFD_COMPRESSION_NONE
 /* 0: means nocompress, 1: best speed, ... 9: best compress ratio */
 #define DEFAULT_MIGRATE_MULTIFD_ZLIB_LEVEL 1
+/*
+ * 1: best speed, ... 9: best compress ratio
+ * There is some nuance here. Refer to QATzip documentation to understand
+ * the mapping of QATzip levels to standard deflate levels.
+ */
+#define DEFAULT_MIGRATE_MULTIFD_QATZIP_LEVEL 1
+
 /* 0: means nocompress, 1: best speed, ... 20: best compress ratio */
 #define DEFAULT_MIGRATE_MULTIFD_ZSTD_LEVEL 1
 
@@ -78,19 +86,23 @@
 #define DEFAULT_MIGRATE_VCPU_DIRTY_LIMIT_PERIOD     1000    /* milliseconds */
 #define DEFAULT_MIGRATE_VCPU_DIRTY_LIMIT            1       /* MB/s */
 
-Property migration_properties[] = {
+const Property migration_properties[] = {
     DEFINE_PROP_BOOL("store-global-state", MigrationState,
                      store_global_state, true),
     DEFINE_PROP_BOOL("send-configuration", MigrationState,
                      send_configuration, true),
     DEFINE_PROP_BOOL("send-section-footer", MigrationState,
                      send_section_footer, true),
+    DEFINE_PROP_BOOL("send-switchover-start", MigrationState,
+                     send_switchover_start, true),
     DEFINE_PROP_BOOL("multifd-flush-after-each-section", MigrationState,
                       multifd_flush_after_each_section, false),
     DEFINE_PROP_UINT8("x-clear-bitmap-shift", MigrationState,
                       clear_bitmap_shift, CLEAR_BITMAP_SHIFT_DEFAULT),
     DEFINE_PROP_BOOL("x-preempt-pre-7-2", MigrationState,
                      preempt_pre_7_2, false),
+    DEFINE_PROP_BOOL("multifd-clean-tls-termination", MigrationState,
+                     multifd_clean_tls_termination, true),
 
     /* Migration parameters */
     DEFINE_PROP_UINT8("x-throttle-trigger-threshold", MigrationState,
@@ -123,6 +135,9 @@ Property migration_properties[] = {
     DEFINE_PROP_UINT8("multifd-zlib-level", MigrationState,
                       parameters.multifd_zlib_level,
                       DEFAULT_MIGRATE_MULTIFD_ZLIB_LEVEL),
+    DEFINE_PROP_UINT8("multifd-qatzip-level", MigrationState,
+                      parameters.multifd_qatzip_level,
+                      DEFAULT_MIGRATE_MULTIFD_QATZIP_LEVEL),
     DEFINE_PROP_UINT8("multifd-zstd-level", MigrationState,
                       parameters.multifd_zstd_level,
                       DEFAULT_MIGRATE_MULTIFD_ZSTD_LEVEL),
@@ -172,6 +187,8 @@ Property migration_properties[] = {
     DEFINE_PROP_MIG_CAP("x-postcopy-ram", MIGRATION_CAPABILITY_POSTCOPY_RAM),
     DEFINE_PROP_MIG_CAP("x-postcopy-preempt",
                         MIGRATION_CAPABILITY_POSTCOPY_PREEMPT),
+    DEFINE_PROP_MIG_CAP("postcopy-blocktime",
+                        MIGRATION_CAPABILITY_POSTCOPY_BLOCKTIME),
     DEFINE_PROP_MIG_CAP("x-colo", MIGRATION_CAPABILITY_X_COLO),
     DEFINE_PROP_MIG_CAP("x-release-ram", MIGRATION_CAPABILITY_RELEASE_RAM),
     DEFINE_PROP_MIG_CAP("x-return-path", MIGRATION_CAPABILITY_RETURN_PATH),
@@ -186,14 +203,21 @@ Property migration_properties[] = {
                         MIGRATION_CAPABILITY_SWITCHOVER_ACK),
     DEFINE_PROP_MIG_CAP("x-dirty-limit", MIGRATION_CAPABILITY_DIRTY_LIMIT),
     DEFINE_PROP_MIG_CAP("mapped-ram", MIGRATION_CAPABILITY_MAPPED_RAM),
-    DEFINE_PROP_END_OF_LIST(),
 };
+const size_t migration_properties_count = ARRAY_SIZE(migration_properties);
 
 bool migrate_auto_converge(void)
 {
     MigrationState *s = migrate_get_current();
 
     return s->capabilities[MIGRATION_CAPABILITY_AUTO_CONVERGE];
+}
+
+bool migrate_send_switchover_start(void)
+{
+    MigrationState *s = migrate_get_current();
+
+    return s->send_switchover_start;
 }
 
 bool migrate_background_snapshot(void)
@@ -329,13 +353,6 @@ bool migrate_xbzrle(void)
     return s->capabilities[MIGRATION_CAPABILITY_XBZRLE];
 }
 
-bool migrate_zero_blocks(void)
-{
-    MigrationState *s = migrate_get_current();
-
-    return s->capabilities[MIGRATION_CAPABILITY_ZERO_BLOCKS];
-}
-
 bool migrate_zero_copy_send(void)
 {
     MigrationState *s = migrate_get_current();
@@ -433,6 +450,24 @@ static bool migrate_incoming_started(void)
     return !!migration_incoming_get_current()->transport_data;
 }
 
+bool migrate_rdma_caps_check(bool *caps, Error **errp)
+{
+    if (caps[MIGRATION_CAPABILITY_XBZRLE]) {
+        error_setg(errp, "RDMA and XBZRLE can't be used together");
+        return false;
+    }
+    if (caps[MIGRATION_CAPABILITY_MULTIFD]) {
+        error_setg(errp, "RDMA and multifd can't be used together");
+        return false;
+    }
+    if (caps[MIGRATION_CAPABILITY_POSTCOPY_RAM]) {
+        error_setg(errp, "RDMA and postcopy-ram can't be used together");
+        return false;
+    }
+
+    return true;
+}
+
 /**
  * @migration_caps_check - check capability compatibility
  *
@@ -446,6 +481,10 @@ bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp)
 {
     ERRP_GUARD();
     MigrationIncomingState *mis = migration_incoming_get_current();
+
+    if (new_caps[MIGRATION_CAPABILITY_ZERO_BLOCKS]) {
+        warn_report("zero-blocks capability is deprecated");
+    }
 
 #ifndef CONFIG_REPLICATION
     if (new_caps[MIGRATION_CAPABILITY_X_COLO]) {
@@ -470,11 +509,6 @@ bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp)
 
         if (new_caps[MIGRATION_CAPABILITY_X_IGNORE_SHARED]) {
             error_setg(errp, "Postcopy is not compatible with ignore-shared");
-            return false;
-        }
-
-        if (new_caps[MIGRATION_CAPABILITY_MULTIFD]) {
-            error_setg(errp, "Postcopy is not yet compatible with multifd");
             return false;
         }
     }
@@ -536,7 +570,7 @@ bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp)
             return false;
         }
 
-        if (migrate_incoming_started()) {
+        if (!migrate_postcopy_preempt() && migrate_incoming_started()) {
             error_setg(errp,
                        "Postcopy preempt must be set before incoming starts");
             return false;
@@ -544,7 +578,7 @@ bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp)
     }
 
     if (new_caps[MIGRATION_CAPABILITY_MULTIFD]) {
-        if (migrate_incoming_started()) {
+        if (!migrate_multifd() && migrate_incoming_started()) {
             error_setg(errp, "Multifd must be set before incoming starts");
             return false;
         }
@@ -592,26 +626,13 @@ bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp)
         }
     }
 
-    return true;
-}
-
-bool migrate_cap_set(int cap, bool value, Error **errp)
-{
-    MigrationState *s = migrate_get_current();
-    bool new_caps[MIGRATION_CAPABILITY__MAX];
-
-    if (migration_is_running()) {
-        error_setg(errp, "There's a migration process in progress");
+    /*
+     * On destination side, check the cases that capability is being set
+     * after incoming thread has started.
+     */
+    if (migrate_rdma() && !migrate_rdma_caps_check(new_caps, errp)) {
         return false;
     }
-
-    memcpy(new_caps, s->capabilities, sizeof(new_caps));
-    new_caps[cap] = value;
-
-    if (!migrate_caps_check(s->capabilities, new_caps, errp)) {
-        return false;
-    }
-    s->capabilities[cap] = value;
     return true;
 }
 
@@ -702,6 +723,25 @@ bool migrate_cpu_throttle_tailslow(void)
     return s->parameters.cpu_throttle_tailslow;
 }
 
+bool migrate_direct_io(void)
+{
+    MigrationState *s = migrate_get_current();
+
+    /*
+     * O_DIRECT is only supported with mapped-ram and multifd.
+     *
+     * mapped-ram is needed because filesystems impose restrictions on
+     * O_DIRECT IO alignment (see MAPPED_RAM_FILE_OFFSET_ALIGNMENT).
+     *
+     * multifd is needed to keep the unaligned portion of the stream
+     * isolated to the main migration thread while multifd channels
+     * process the aligned data with O_DIRECT enabled.
+     */
+    return s->parameters.direct_io &&
+        s->capabilities[MIGRATION_CAPABILITY_MAPPED_RAM] &&
+        s->capabilities[MIGRATION_CAPABILITY_MULTIFD];
+}
+
 uint64_t migrate_downtime_limit(void)
 {
     MigrationState *s = migrate_get_current();
@@ -739,8 +779,11 @@ uint64_t migrate_max_postcopy_bandwidth(void)
 
 MigMode migrate_mode(void)
 {
-    MigrationState *s = migrate_get_current();
-    MigMode mode = s->parameters.mode;
+    MigMode mode = cpr_get_incoming_mode();
+
+    if (mode == MIG_MODE_NONE) {
+        mode = migrate_get_current()->parameters.mode;
+    }
 
     assert(mode >= 0 && mode < MIG_MODE__MAX);
     return mode;
@@ -766,6 +809,13 @@ int migrate_multifd_zlib_level(void)
     MigrationState *s = migrate_get_current();
 
     return s->parameters.multifd_zlib_level;
+}
+
+int migrate_multifd_qatzip_level(void)
+{
+    MigrationState *s = migrate_get_current();
+
+    return s->parameters.multifd_qatzip_level;
 }
 
 int migrate_multifd_zstd_level(void)
@@ -873,6 +923,8 @@ MigrationParameters *qmp_query_migrate_parameters(Error **errp)
     params->multifd_compression = s->parameters.multifd_compression;
     params->has_multifd_zlib_level = true;
     params->multifd_zlib_level = s->parameters.multifd_zlib_level;
+    params->has_multifd_qatzip_level = true;
+    params->multifd_qatzip_level = s->parameters.multifd_qatzip_level;
     params->has_multifd_zstd_level = true;
     params->multifd_zstd_level = s->parameters.multifd_zstd_level;
     params->has_xbzrle_cache_size = true;
@@ -905,6 +957,8 @@ MigrationParameters *qmp_query_migrate_parameters(Error **errp)
     params->mode = s->parameters.mode;
     params->has_zero_page_detection = true;
     params->zero_page_detection = s->parameters.zero_page_detection;
+    params->has_direct_io = true;
+    params->direct_io = s->parameters.direct_io;
 
     return params;
 }
@@ -925,6 +979,7 @@ void migrate_params_init(MigrationParameters *params)
     params->has_multifd_channels = true;
     params->has_multifd_compression = true;
     params->has_multifd_zlib_level = true;
+    params->has_multifd_qatzip_level = true;
     params->has_multifd_zstd_level = true;
     params->has_xbzrle_cache_size = true;
     params->has_max_postcopy_bandwidth = true;
@@ -937,6 +992,7 @@ void migrate_params_init(MigrationParameters *params)
     params->has_vcpu_dirty_limit = true;
     params->has_mode = true;
     params->has_zero_page_detection = true;
+    params->has_direct_io = true;
 }
 
 /*
@@ -1013,6 +1069,14 @@ bool migrate_params_check(MigrationParameters *params, Error **errp)
         (params->multifd_zlib_level > 9)) {
         error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "multifd_zlib_level",
                    "a value between 0 and 9");
+        return false;
+    }
+
+    if (params->has_multifd_qatzip_level &&
+        ((params->multifd_qatzip_level > 9) ||
+        (params->multifd_qatzip_level < 1))) {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "multifd_qatzip_level",
+                   "a value between 1 and 9");
         return false;
     }
 
@@ -1110,6 +1174,11 @@ bool migrate_params_check(MigrationParameters *params, Error **errp)
         return false;
     }
 
+    if (params->has_direct_io && params->direct_io && !qemu_has_direct_io()) {
+        error_setg(errp, "No build-time support for direct-io");
+        return false;
+    }
+
     return true;
 }
 
@@ -1146,6 +1215,11 @@ static void migrate_params_test_apply(MigrateSetParameters *params,
         dest->tls_hostname = params->tls_hostname->u.s;
     }
 
+    if (params->tls_authz) {
+        assert(params->tls_authz->type == QTYPE_QSTRING);
+        dest->tls_authz = params->tls_authz->u.s;
+    }
+
     if (params->has_max_bandwidth) {
         dest->max_bandwidth = params->max_bandwidth;
     }
@@ -1167,6 +1241,9 @@ static void migrate_params_test_apply(MigrateSetParameters *params,
     }
     if (params->has_multifd_compression) {
         dest->multifd_compression = params->multifd_compression;
+    }
+    if (params->has_multifd_qatzip_level) {
+        dest->multifd_qatzip_level = params->multifd_qatzip_level;
     }
     if (params->has_multifd_zlib_level) {
         dest->multifd_zlib_level = params->multifd_zlib_level;
@@ -1215,6 +1292,10 @@ static void migrate_params_test_apply(MigrateSetParameters *params,
 
     if (params->has_zero_page_detection) {
         dest->zero_page_detection = params->zero_page_detection;
+    }
+
+    if (params->has_direct_io) {
+        dest->direct_io = params->direct_io;
     }
 }
 
@@ -1284,6 +1365,9 @@ static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
     if (params->has_multifd_compression) {
         s->parameters.multifd_compression = params->multifd_compression;
     }
+    if (params->has_multifd_qatzip_level) {
+        s->parameters.multifd_qatzip_level = params->multifd_qatzip_level;
+    }
     if (params->has_multifd_zlib_level) {
         s->parameters.multifd_zlib_level = params->multifd_zlib_level;
     }
@@ -1340,6 +1424,10 @@ static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
 
     if (params->has_zero_page_detection) {
         s->parameters.zero_page_detection = params->zero_page_detection;
+    }
+
+    if (params->has_direct_io) {
+        s->parameters.direct_io = params->direct_io;
     }
 }
 

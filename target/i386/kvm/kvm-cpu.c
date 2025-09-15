@@ -10,13 +10,12 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "host-cpu.h"
-#include "kvm-cpu.h"
 #include "qapi/error.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/boards.h"
 
 #include "kvm_i386.h"
-#include "hw/core/accel-cpu.h"
+#include "accel/accel-cpu-target.h"
 
 static void kvm_set_guest_phys_bits(CPUState *cs)
 {
@@ -42,6 +41,7 @@ static void kvm_set_guest_phys_bits(CPUState *cs)
 static bool kvm_cpu_realizefn(CPUState *cs, Error **errp)
 {
     X86CPU *cpu = X86_CPU(cs);
+    X86CPUClass *xcc = X86_CPU_GET_CLASS(cpu);
     CPUX86State *env = &cpu->env;
     bool ret;
 
@@ -64,9 +64,16 @@ static bool kvm_cpu_realizefn(CPUState *cs, Error **errp)
      *   check/update ucode_rev, phys_bits, guest_phys_bits, mwait
      *   cpu_common_realizefn() (via xcc->parent_realize)
      */
-    if (cpu->max_features) {
-        if (enable_cpu_pm && kvm_has_waitpkg()) {
-            env->features[FEAT_7_0_ECX] |= CPUID_7_0_ECX_WAITPKG;
+    if (xcc->max_features) {
+        if (enable_cpu_pm) {
+            if (kvm_has_waitpkg()) {
+                env->features[FEAT_7_0_ECX] |= CPUID_7_0_ECX_WAITPKG;
+            }
+
+            if (env->features[FEAT_1_ECX] & CPUID_EXT_MONITOR) {
+                host_cpuid(5, 0, &cpu->mwait.eax, &cpu->mwait.ebx,
+                           &cpu->mwait.ecx, &cpu->mwait.edx);
+            }
         }
         if (cpu->ucode_rev == 0) {
             cpu->ucode_rev =
@@ -102,7 +109,7 @@ static void kvm_cpu_max_instance_init(X86CPU *cpu)
     CPUX86State *env = &cpu->env;
     KVMState *s = kvm_state;
 
-    host_cpu_max_instance_init(cpu);
+    object_property_set_bool(OBJECT(cpu), "pmu", true, &error_abort);
 
     if (lmce_supported()) {
         object_property_set_bool(OBJECT(cpu), "lmce", true, &error_abort);
@@ -135,10 +142,6 @@ static void kvm_cpu_xsave_init(void)
         ExtSaveArea *esa = &x86_ext_save_areas[i];
 
         if (!esa->size) {
-            continue;
-        }
-        if ((x86_cpu_get_supported_feature_word(esa->feature, false) & esa->bits)
-            != esa->bits) {
             continue;
         }
         host_cpuid(0xd, i, &eax, &ebx, &ecx, &edx);
@@ -178,7 +181,7 @@ static PropValue kvm_default_props[] = {
 /*
  * Only for builtin_x86_defs models initialized with x86_register_cpudef_types.
  */
-void x86_cpu_change_kvm_default(const char *prop, const char *value)
+static void x86_cpu_change_kvm_default(const char *prop, const char *value)
 {
     PropValue *pv;
     for (pv = kvm_default_props; pv->prop; pv++) {
@@ -214,14 +217,14 @@ static void kvm_cpu_instance_init(CPUState *cs)
         x86_cpu_apply_props(cpu, kvm_default_props);
     }
 
-    if (cpu->max_features) {
+    if (xcc->max_features) {
         kvm_cpu_max_instance_init(cpu);
     }
 
     kvm_cpu_xsave_init();
 }
 
-static void kvm_cpu_accel_class_init(ObjectClass *oc, void *data)
+static void kvm_cpu_accel_class_init(ObjectClass *oc, const void *data)
 {
     AccelCPUClass *acc = ACCEL_CPU_CLASS(oc);
 

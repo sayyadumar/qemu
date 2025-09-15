@@ -21,6 +21,8 @@
 #include "user-internals.h"
 #include "signal-common.h"
 #include "linux-user/trace.h"
+#include "target_ptrace.h"
+
 
 /* A Sparc register window */
 struct target_reg_window {
@@ -545,11 +547,6 @@ void setup_sigtramp(abi_ulong sigtramp_page)
 
 typedef abi_ulong target_mc_greg_t;
 typedef target_mc_greg_t target_mc_gregset_t[SPARC_MC_NGREG];
-
-struct target_mc_fq {
-    abi_ulong mcfq_addr;
-    uint32_t mcfq_insn;
-};
 
 /*
  * Note the manual 16-alignment; the kernel gets this because it

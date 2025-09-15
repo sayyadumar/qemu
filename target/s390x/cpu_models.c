@@ -14,8 +14,8 @@
 #include "cpu.h"
 #include "s390x-internal.h"
 #include "kvm/kvm_s390x.h"
-#include "sysemu/kvm.h"
-#include "sysemu/tcg.h"
+#include "system/kvm.h"
+#include "system/tcg.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qapi/visitor.h"
@@ -23,8 +23,9 @@
 #include "qemu/hw-version.h"
 #include "qemu/qemu-print.h"
 #ifndef CONFIG_USER_ONLY
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "target/s390x/kvm/pv.h"
+#include CONFIG_DEVICES
 #endif
 
 #define CPUDEF_INIT(_type, _gen, _ec_ga, _mha_pow, _hmfai, _name, _desc) \
@@ -47,6 +48,13 @@
  * generation 15 one base feature and one optional feature have been deprecated.
  */
 static S390CPUDef s390_cpu_defs[] = {
+    /*
+     * Linux requires at least z10 nowadays, and IBM only supports recent CPUs
+     * (see https://www.ibm.com/support/pages/ibm-mainframe-life-cycle-history),
+     * so we consider older CPUs as legacy that can optionally be disabled via
+     * the CONFIG_S390X_LEGACY_CPUS config switch.
+     */
+#if defined(CONFIG_S390X_LEGACY_CPUS) || defined(CONFIG_USER_ONLY)
     CPUDEF_INIT(0x2064, 7, 1, 38, 0x00000000U, "z900", "IBM zSeries 900 GA1"),
     CPUDEF_INIT(0x2064, 7, 2, 38, 0x00000000U, "z900.2", "IBM zSeries 900 GA2"),
     CPUDEF_INIT(0x2064, 7, 3, 38, 0x00000000U, "z900.3", "IBM zSeries 900 GA3"),
@@ -64,6 +72,7 @@ static S390CPUDef s390_cpu_defs[] = {
     CPUDEF_INIT(0x2096, 9, 2, 40, 0x00000000U, "z9BC", "IBM System z9 BC GA1"),
     CPUDEF_INIT(0x2094, 9, 3, 40, 0x00000000U, "z9EC.3", "IBM System z9 EC GA3"),
     CPUDEF_INIT(0x2096, 9, 3, 40, 0x00000000U, "z9BC.2", "IBM System z9 BC GA2"),
+#endif
     CPUDEF_INIT(0x2097, 10, 1, 43, 0x00000000U, "z10EC", "IBM System z10 EC GA1"),
     CPUDEF_INIT(0x2097, 10, 2, 43, 0x00000000U, "z10EC.2", "IBM System z10 EC GA2"),
     CPUDEF_INIT(0x2098, 10, 2, 43, 0x00000000U, "z10BC", "IBM System z10 BC GA1"),
@@ -85,6 +94,8 @@ static S390CPUDef s390_cpu_defs[] = {
     CPUDEF_INIT(0x8562, 15, 1, 47, 0x08000000U, "gen15b", "IBM z15 T02 GA1"),
     CPUDEF_INIT(0x3931, 16, 1, 47, 0x08000000U, "gen16a", "IBM 3931 GA1"),
     CPUDEF_INIT(0x3932, 16, 1, 47, 0x08000000U, "gen16b", "IBM 3932 GA1"),
+    CPUDEF_INIT(0x9175, 17, 1, 47, 0x08000000U, "gen17a", "IBM 9175 GA1"),
+    CPUDEF_INIT(0x9176, 17, 1, 47, 0x08000000U, "gen17b", "IBM 9176 GA1"),
 };
 
 #define QEMU_MAX_CPU_TYPE 0x8561
@@ -362,7 +373,7 @@ static void s390_print_cpu_model_list_entry(gpointer data, gpointer user_data)
     g_free(name);
 }
 
-static gint s390_cpu_list_compare(gconstpointer a, gconstpointer b)
+static gint s390_cpu_list_compare(gconstpointer a, gconstpointer b, gpointer d)
 {
     const S390CPUClass *cc_a = S390_CPU_CLASS((ObjectClass *)a);
     const S390CPUClass *cc_b = S390_CPU_CLASS((ObjectClass *)b);
@@ -404,7 +415,7 @@ void s390_cpu_list(void)
 
     qemu_printf("Available CPUs:\n");
     list = object_class_get_list(TYPE_S390_CPU, false);
-    list = g_slist_sort(list, s390_cpu_list_compare);
+    list = g_slist_sort_with_data(list, s390_cpu_list_compare, NULL);
     g_slist_foreach(list, s390_print_cpu_model_list_entry, NULL);
     g_slist_free(list);
 
@@ -448,7 +459,10 @@ static void check_consistency(const S390CPUModel *model)
         { S390_FEAT_VECTOR_PACKED_DECIMAL, S390_FEAT_VECTOR },
         { S390_FEAT_VECTOR_PACKED_DECIMAL_ENH, S390_FEAT_VECTOR_PACKED_DECIMAL },
         { S390_FEAT_VECTOR_PACKED_DECIMAL_ENH2, S390_FEAT_VECTOR_PACKED_DECIMAL_ENH },
+        { S390_FEAT_VECTOR_PACKED_DECIMAL_ENH3, S390_FEAT_VECTOR_PACKED_DECIMAL_ENH2 },
         { S390_FEAT_VECTOR_ENH, S390_FEAT_VECTOR },
+        { S390_FEAT_VECTOR_ENH2, S390_FEAT_VECTOR_ENH },
+        { S390_FEAT_VECTOR_ENH3, S390_FEAT_VECTOR_ENH2 },
         { S390_FEAT_INSTRUCTION_EXEC_PROT, S390_FEAT_SIDE_EFFECT_ACCESS_ESOP2 },
         { S390_FEAT_SIDE_EFFECT_ACCESS_ESOP2, S390_FEAT_ESOP },
         { S390_FEAT_CMM_NT, S390_FEAT_CMM },
@@ -468,6 +482,18 @@ static void check_consistency(const S390CPUModel *model)
         { S390_FEAT_KLMD_SHA3_512, S390_FEAT_MSA },
         { S390_FEAT_KLMD_SHAKE_128, S390_FEAT_MSA },
         { S390_FEAT_KLMD_SHAKE_256, S390_FEAT_MSA },
+        { S390_FEAT_KMAC_HMAC_SHA_224, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_SHA_256, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_SHA_384, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_SHA_512, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_ESHA_224, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_ESHA_256, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_ESHA_384, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KMAC_HMAC_ESHA_512, S390_FEAT_MSA_EXT_3 },
+        { S390_FEAT_KM_FULL_XTS_AES_128, S390_FEAT_MSA_EXT_4 },
+        { S390_FEAT_KM_FULL_XTS_AES_256, S390_FEAT_MSA_EXT_4 },
+        { S390_FEAT_KM_FULL_XTS_EAES_128, S390_FEAT_MSA_EXT_4 },
+        { S390_FEAT_KM_FULL_XTS_EAES_256, S390_FEAT_MSA_EXT_4 },
         { S390_FEAT_PRNO_TRNG_QRTCR, S390_FEAT_MSA_EXT_5 },
         { S390_FEAT_PRNO_TRNG, S390_FEAT_MSA_EXT_5 },
         { S390_FEAT_SIE_KSS, S390_FEAT_SIE_F2 },
@@ -483,6 +509,50 @@ static void check_consistency(const S390CPUModel *model)
         { S390_FEAT_RDP, S390_FEAT_LOCAL_TLB_CLEARING },
         { S390_FEAT_UV_FEAT_AP, S390_FEAT_AP },
         { S390_FEAT_UV_FEAT_AP_INTR, S390_FEAT_UV_FEAT_AP },
+        { S390_FEAT_PFCR_QAF, S390_FEAT_CCF_BASE },
+        { S390_FEAT_PFCR_CSDST, S390_FEAT_CCF_BASE },
+        { S390_FEAT_PFCR_CSDSTG, S390_FEAT_CCF_BASE },
+        { S390_FEAT_PFCR_CSTST, S390_FEAT_CCF_BASE },
+        { S390_FEAT_PFCR_CSTSTG, S390_FEAT_CCF_BASE },
+        { S390_FEAT_INEFF_NC_TX, S390_FEAT_TRANSACTIONAL_EXE },
+        { S390_FEAT_PLO_CLO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_CSO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DCSO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_CSSTO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_CSDSTO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_CSTSTO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TCS, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TCSG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TCSX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TCSO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QCS, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QCSG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QCSX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QCSO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_LO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DLX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DLO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TL, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TLG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TLX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TLO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QL, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QLG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QLX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QLO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_STO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DST, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DSTG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DSTX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_DSTO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TST, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TSTG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TSTX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_TSTO, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QST, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QSTG, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QSTX, S390_FEAT_PLO_EXT },
+        { S390_FEAT_PLO_QSTO, S390_FEAT_PLO_EXT },
     };
     int i;
 
@@ -508,7 +578,6 @@ static void check_compat_model_failed(Error **errp,
     error_setg(errp, "%s. Maximum supported model in the current configuration: \'%s\'",
                msg, max_model->def->name);
     error_append_hint(errp, "Consider a different accelerator, try \"-accel help\"\n");
-    return;
 }
 
 static bool check_compatibility(const S390CPUModel *max_model,
@@ -850,7 +919,7 @@ void s390_cpu_model_class_register_props(ObjectClass *oc)
 }
 
 #ifdef CONFIG_KVM
-static void s390_host_cpu_model_class_init(ObjectClass *oc, void *data)
+static void s390_host_cpu_model_class_init(ObjectClass *oc, const void *data)
 {
     S390CPUClass *xcc = S390_CPU_CLASS(oc);
 
@@ -859,7 +928,7 @@ static void s390_host_cpu_model_class_init(ObjectClass *oc, void *data)
 }
 #endif
 
-static void s390_base_cpu_model_class_init(ObjectClass *oc, void *data)
+static void s390_base_cpu_model_class_init(ObjectClass *oc, const void *data)
 {
     S390CPUClass *xcc = S390_CPU_CLASS(oc);
 
@@ -870,7 +939,7 @@ static void s390_base_cpu_model_class_init(ObjectClass *oc, void *data)
     xcc->desc = xcc->cpu_def->desc;
 }
 
-static void s390_cpu_model_class_init(ObjectClass *oc, void *data)
+static void s390_cpu_model_class_init(ObjectClass *oc, const void *data)
 {
     S390CPUClass *xcc = S390_CPU_CLASS(oc);
 
@@ -880,7 +949,7 @@ static void s390_cpu_model_class_init(ObjectClass *oc, void *data)
     xcc->desc = xcc->cpu_def->desc;
 }
 
-static void s390_qemu_cpu_model_class_init(ObjectClass *oc, void *data)
+static void s390_qemu_cpu_model_class_init(ObjectClass *oc, const void *data)
 {
     S390CPUClass *xcc = S390_CPU_CLASS(oc);
 
@@ -889,7 +958,7 @@ static void s390_qemu_cpu_model_class_init(ObjectClass *oc, void *data)
                                 qemu_hw_version());
 }
 
-static void s390_max_cpu_model_class_init(ObjectClass *oc, void *data)
+static void s390_max_cpu_model_class_init(ObjectClass *oc, const void *data)
 {
     S390CPUClass *xcc = S390_CPU_CLASS(oc);
 
@@ -1003,7 +1072,7 @@ static void register_types(void)
             .instance_init = s390_cpu_model_initfn,
             .instance_finalize = s390_cpu_model_finalize,
             .class_init = s390_base_cpu_model_class_init,
-            .class_data = (void *) &s390_cpu_defs[i],
+            .class_data = &s390_cpu_defs[i],
         };
         char *name = s390_cpu_type_name(s390_cpu_defs[i].name);
         TypeInfo ti = {
@@ -1012,7 +1081,7 @@ static void register_types(void)
             .instance_init = s390_cpu_model_initfn,
             .instance_finalize = s390_cpu_model_finalize,
             .class_init = s390_cpu_model_class_init,
-            .class_data = (void *) &s390_cpu_defs[i],
+            .class_data = &s390_cpu_defs[i],
         };
 
         type_register_static(&ti_base);

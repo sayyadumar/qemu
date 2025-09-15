@@ -24,8 +24,8 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "exec/address-spaces.h"
-#include "sysemu/sysemu.h"
+#include "system/address-spaces.h"
+#include "system/system.h"
 #include "hw/or-irq.h"
 #include "hw/arm/stm32l4x5_soc.h"
 #include "hw/char/stm32l4x5_usart.h"
@@ -81,6 +81,10 @@ static const int exti_irq[NUM_EXTI_IRQ] = {
 #define RCC_BASE_ADDRESS 0x40021000
 #define RCC_IRQ 5
 
+#define EXTI_USART1_IRQ 26
+#define EXTI_UART4_IRQ 29
+#define EXTI_LPUART1_IRQ 31
+
 static const int exti_or_gates_out[NUM_EXTI_OR_GATES] = {
     23, 40, 63, 1,
 };
@@ -128,10 +132,6 @@ static const hwaddr uart_addr[] = {
 };
 
 #define LPUART_BASE_ADDRESS 0x40008000
-
-static const int usart_irq[] = { 37, 38, 39 };
-static const int uart_irq[] = { 52, 53 };
-#define LPUART_IRQ 70
 
 static void stm32l4x5_soc_initfn(Object *obj)
 {
@@ -236,6 +236,8 @@ static void stm32l4x5_soc_realize(DeviceState *dev_soc, Error **errp)
 
     /* System configuration controller */
     busdev = SYS_BUS_DEVICE(&s->syscfg);
+    qdev_connect_clock_in(DEVICE(&s->syscfg), "clk",
+        qdev_get_clock_out(DEVICE(&(s->rcc)), "syscfg-out"));
     if (!sysbus_realize(busdev, errp)) {
         return;
     }
@@ -297,6 +299,7 @@ static void stm32l4x5_soc_realize(DeviceState *dev_soc, Error **errp)
         }
     }
 
+    /* Connect SYSCFG to EXTI */
     for (unsigned i = 0; i < GPIO_NUM_PINS; i++) {
         qdev_connect_gpio_out(DEVICE(&s->syscfg), i,
                               qdev_get_gpio_in(DEVICE(&s->exti), i));
@@ -322,14 +325,9 @@ static void stm32l4x5_soc_realize(DeviceState *dev_soc, Error **errp)
             return;
         }
         sysbus_mmio_map(busdev, 0, usart_addr[i]);
-        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(armv7m, usart_irq[i]));
+        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(DEVICE(&s->exti),
+                                                       EXTI_USART1_IRQ + i));
     }
-
-    /*
-     * TODO: Connect the USARTs, UARTs and LPUART to the EXTI once the EXTI
-     * can handle other gpio-in than the gpios. (e.g. Direct Lines for the
-     * usarts)
-     */
 
     /* UART devices */
     for (int i = 0; i < STM_NUM_UARTS; i++) {
@@ -343,7 +341,8 @@ static void stm32l4x5_soc_realize(DeviceState *dev_soc, Error **errp)
             return;
         }
         sysbus_mmio_map(busdev, 0, uart_addr[i]);
-        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(armv7m, uart_irq[i]));
+        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(DEVICE(&s->exti),
+                                                       EXTI_UART4_IRQ + i));
     }
 
     /* LPUART device*/
@@ -356,7 +355,8 @@ static void stm32l4x5_soc_realize(DeviceState *dev_soc, Error **errp)
         return;
     }
     sysbus_mmio_map(busdev, 0, LPUART_BASE_ADDRESS);
-    sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(armv7m, LPUART_IRQ));
+    sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(DEVICE(&s->exti),
+                                                   EXTI_LPUART1_IRQ));
 
     /* APB1 BUS */
     create_unimplemented_device("TIM2",      0x40000000, 0x400);
@@ -435,7 +435,7 @@ static void stm32l4x5_soc_realize(DeviceState *dev_soc, Error **errp)
     create_unimplemented_device("QUADSPI",   0xA0001000, 0x400);
 }
 
-static void stm32l4x5_soc_class_init(ObjectClass *klass, void *data)
+static void stm32l4x5_soc_class_init(ObjectClass *klass, const void *data)
 {
 
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -446,21 +446,21 @@ static void stm32l4x5_soc_class_init(ObjectClass *klass, void *data)
     /* No vmstate or reset required: device has no internal state */
 }
 
-static void stm32l4x5xc_soc_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5xc_soc_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5SocClass *ssc = STM32L4X5_SOC_CLASS(oc);
 
     ssc->flash_size = 256 * KiB;
 }
 
-static void stm32l4x5xe_soc_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5xe_soc_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5SocClass *ssc = STM32L4X5_SOC_CLASS(oc);
 
     ssc->flash_size = 512 * KiB;
 }
 
-static void stm32l4x5xg_soc_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5xg_soc_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5SocClass *ssc = STM32L4X5_SOC_CLASS(oc);
 

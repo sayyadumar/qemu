@@ -149,6 +149,9 @@ struct CPUPluginState {
 
 /**
  * qemu_plugin_create_vcpu_state: allocate plugin state
+ *
+ * The returned data must be released with g_free()
+ * when no longer required.
  */
 CPUPluginState *qemu_plugin_create_vcpu_state(void);
 
@@ -164,6 +167,8 @@ qemu_plugin_vcpu_syscall(CPUState *cpu, int64_t num, uint64_t a1,
 void qemu_plugin_vcpu_syscall_ret(CPUState *cpu, int64_t num, int64_t ret);
 
 void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
+                             uint64_t value_low,
+                             uint64_t value_high,
                              MemOpIdx oi, enum qemu_plugin_mem_rw rw);
 
 void qemu_plugin_flush_cb(void);
@@ -203,6 +208,21 @@ void qemu_plugin_user_prefork_lock(void);
  * can continue using the plugin interface.
  */
 void qemu_plugin_user_postfork(bool is_child);
+
+enum qemu_plugin_cb_flags tcg_call_to_qemu_plugin_cb_flags(int flags);
+
+static inline void qemu_plugin_set_cb_flags(CPUState *cpu,
+                                            enum qemu_plugin_cb_flags flags)
+{
+    assert(cpu);
+    cpu->neg.plugin_cb_flags = flags;
+}
+
+static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+{
+    assert(current_cpu);
+    return current_cpu->neg.plugin_cb_flags;
+}
 
 #else /* !CONFIG_PLUGIN */
 
@@ -248,6 +268,8 @@ void qemu_plugin_vcpu_syscall_ret(CPUState *cpu, int64_t num, int64_t ret)
 { }
 
 static inline void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
+                                           uint64_t value_low,
+                                           uint64_t value_high,
                                            MemOpIdx oi,
                                            enum qemu_plugin_mem_rw rw)
 { }

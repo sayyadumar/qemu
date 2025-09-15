@@ -162,6 +162,12 @@ specified with ``-mem-path`` can actually provide the guest RAM configured with
 The ``name`` parameter of the ``-net`` option was a synonym
 for the ``id`` parameter, which should now be used instead.
 
+RISC-V firmware not booted by default (removed in 5.1)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+QEMU 5.1 changes the default behaviour from ``-bios none`` to ``-bios default``
+for the RISC-V ``virt`` machine and ``sifive_u`` machine.
+
 ``-numa node,mem=...`` (removed in 5.1)
 '''''''''''''''''''''''''''''''''''''''
 
@@ -324,12 +330,6 @@ devices.  Drives the board doesn't pick up can no longer be used with
 This option was undocumented and not used in the field.
 Use ``-device usb-ccid`` instead.
 
-RISC-V firmware not booted by default (removed in 5.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-QEMU 5.1 changes the default behaviour from ``-bios none`` to ``-bios default``
-for the RISC-V ``virt`` machine and ``sifive_u`` machine.
-
 ``-no-quit`` (removed in 7.0)
 '''''''''''''''''''''''''''''
 
@@ -355,13 +355,13 @@ The ``-writeconfig`` option was not able to serialize the entire contents
 of the QEMU command line.  It is thus considered a failed experiment
 and removed without a replacement.
 
-``loaded`` property of ``secret`` and ``secret_keyring`` objects (removed in 7.1)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+``loaded`` property of secret and TLS credential objects (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The ``loaded=on`` option in the command line or QMP ``object-add`` either had
 no effect (if ``loaded`` was the last option) or caused options to be
 effectively ignored as if they were not given.  The property is therefore
-useless and should simply be removed.
+useless and has been removed.
 
 ``opened`` property of ``rng-*`` objects (removed in 7.1)
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -403,13 +403,13 @@ Sound card devices should be created using ``-device`` or ``-audio``.
 The exception is ``pcspk`` which can be activated using ``-machine
 pcspk-audiodev=<name>``.
 
-``-watchdog`` (since 7.2)
-'''''''''''''''''''''''''
+``-watchdog`` (removed in 7.2)
+''''''''''''''''''''''''''''''
 
 Use ``-device`` instead.
 
-Hexadecimal sizes with scaling multipliers (since 8.0)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Hexadecimal sizes with scaling multipliers (removed in 8.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 Input parameters that take a size value should only use a size suffix
 (such as 'k' or 'M') when the base is written in decimal, and not when
@@ -510,6 +510,57 @@ than zero.
 
 Removed along with the ``compression`` migration capability.
 
+``-device virtio-blk,scsi=on|off`` (removed in 9.1)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The virtio-blk SCSI passthrough feature is a legacy VIRTIO feature.  VIRTIO 1.0
+and later do not support it because the virtio-scsi device was introduced for
+full SCSI support.  Use virtio-scsi instead when SCSI passthrough is required.
+
+``-fsdev proxy`` and ``-virtfs proxy`` (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The 9p ``proxy`` filesystem backend driver was originally developed to
+enhance security by dispatching low level filesystem operations from 9p
+server (QEMU process) over to a separate process (the virtfs-proxy-helper
+binary). However the proxy backend was much slower than the local backend,
+didn't see any development in years, and showed to be less secure,
+especially due to the fact that its helper daemon must be run as root.
+
+Use ``local``, possibly mapping permissions et al by using its 'mapped'
+security model option, or switch to ``virtiofs``.   The virtiofs daemon
+``virtiofsd`` uses vhost to eliminate the high latency costs of the 9p
+``proxy`` backend.
+
+``-portrait`` and ``-rotate`` (removed in 9.2)
+''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``-portrait`` and ``-rotate`` options were documented as only
+working with the PXA LCD device, and all the machine types using
+that display device were removed in 9.2, so these options also
+have been dropped.
+
+These options were intended to simulate a mobile device being
+rotated by the user, and had three effects:
+
+* the display output was rotated by 90, 180 or 270 degrees
+* the mouse/trackpad input was rotated the opposite way
+* the machine model would signal to the guest about its
+  orientation
+
+Of these three things, the input-rotation was coded without being
+restricted to boards which supported the full set of device-rotation
+handling, so in theory the options were usable on other machine models
+to produce an odd effect (rotating input but not display output). But
+this was never intended or documented behaviour, so we have dropped
+the options along with the machine models they were intended for.
+
+``-runas`` (removed in 10.0)
+''''''''''''''''''''''''''''
+
+Use ``-run-with user=..`` instead.
+
+
 User-mode emulator command line arguments
 -----------------------------------------
 
@@ -519,6 +570,14 @@ User-mode emulator command line arguments
 The ``-singlestep`` option has been given a name that better reflects
 what it actually does. For both linux-user and bsd-user, use the
 ``-one-insn-per-tb`` option instead.
+
+``-p`` (removed in 10.2)
+''''''''''''''''''''''''
+
+The ``-p`` option pretends to control the host page size.  However,
+it is not possible to change the host page size; we stopped trying
+to do anything with the option except print a warning from 9.0,
+and now the option is removed entirely.
 
 
 QEMU Machine Protocol (QMP) commands
@@ -671,6 +730,30 @@ Use ``multifd-channels`` instead.
 
 Use ``multifd-compression`` instead.
 
+Incorrectly typed ``device_add`` arguments (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Due to shortcomings in the internal implementation of ``device_add``,
+QEMU used to incorrectly accept certain invalid arguments. Any object
+or list arguments were silently ignored. Other argument types were not
+checked, but an implicit conversion happened, so that e.g. string
+values could be assigned to integer device properties or vice versa.
+
+QEMU Machine Protocol (QMP) events
+----------------------------------
+
+``MEM_UNPLUG_ERROR`` (removed in 9.1)
+'''''''''''''''''''''''''''''''''''''
+
+MEM_UNPLUG_ERROR has been replaced by the more generic ``DEVICE_UNPLUG_GUEST_ERROR`` event.
+
+``vcpu`` trace events (removed in 9.1)
+''''''''''''''''''''''''''''''''''''''
+
+The ability to instrument QEMU helper functions with vCPU-aware trace
+points was removed in 7.0.
+
+
 Human Monitor Protocol (HMP) commands
 -------------------------------------
 
@@ -792,6 +875,15 @@ QEMU.  Since all recent x86 hardware from the past >10 years is
 capable of the 64-bit x86 extensions, a corresponding 64-bit OS should
 be used instead.
 
+32-bit hosts for 64-bit guests (removed in 10.0)
+''''''''''''''''''''''''''''''''''''''''''''''''
+
+In general, 32-bit hosts cannot support the memory space or atomicity
+requirements of 64-bit guests.  Prior to 10.0, QEMU attempted to
+work around the atomicity issues in system mode by running all vCPUs
+in a single thread context; in user mode atomicity was simply broken.
+From 10.0, QEMU has disabled configuration of 64-bit guests on 32-bit hosts.
+
 Guest Emulator ISAs
 -------------------
 
@@ -866,6 +958,21 @@ Nios II CPU (removed in 9.1)
 QEMU Nios II architecture was orphan; Intel has EOL'ed the Nios II
 processor IP (see `Intel discontinuance notification`_).
 
+CRIS CPU architecture (removed in 9.2)
+''''''''''''''''''''''''''''''''''''''
+
+The CRIS architecture was pulled from Linux in 4.17 and the compiler
+was no longer packaged in any distro making it harder to run the
+``check-tcg`` tests.
+
+RISC-V 'any' CPU type ``-cpu any`` (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The 'any' CPU type was introduced back in 2018 and was around since the
+initial RISC-V QEMU port. Its usage was always been unclear: users don't know
+what to expect from a CPU called 'any', and in fact the CPU does not do anything
+special that isn't already done by the default CPUs rv32/rv64.
+
 System accelerators
 -------------------
 
@@ -876,20 +983,27 @@ Userspace local APIC with KVM (x86, removed in 8.0)
 a local APIC.  The ``split`` setting is supported, as is using ``-M
 kernel-irqchip=off`` when the CPU does not have a local APIC.
 
-HAXM (``-accel hax``) (removed in 8.2)
-''''''''''''''''''''''''''''''''''''''
-
-The HAXM project has been retired (see https://github.com/intel/haxm#status).
-Use "whpx" (on Windows) or "hvf" (on macOS) instead.
-
 MIPS "Trap-and-Emulate" KVM support (removed in 8.0)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The MIPS "Trap-and-Emulate" KVM host and guest support was removed
 from Linux in 2021, and is not supported anymore by QEMU either.
 
+HAXM (``-accel hax``) (removed in 8.2)
+''''''''''''''''''''''''''''''''''''''
+
+The HAXM project has been retired (see https://github.com/intel/haxm#status).
+Use "whpx" (on Windows) or "hvf" (on macOS) instead.
+
 System emulator machines
 ------------------------
+
+Versioned machine types (aarch64, arm, i386, m68k, ppc64, s390x, x86_64)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+In accordance with our versioned machine type deprecation policy, all machine
+types with version |VER_MACHINE_DELETION_VERSION|, or older, have been
+removed.
 
 ``s390-virtio`` (removed in 2.6)
 ''''''''''''''''''''''''''''''''
@@ -925,12 +1039,6 @@ mips ``fulong2e`` machine alias (removed in 6.0)
 
 This machine has been renamed ``fuloong2e``.
 
-``pc-0.10`` up to ``pc-i440fx-1.7`` (removed in 4.0 up to 8.2)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-These machine types were very old and likely could not be used for live
-migration from old QEMU versions anymore. Use a newer machine type instead.
-
 Raspberry Pi ``raspi2`` and ``raspi3`` machines (removed in 6.2)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
@@ -954,6 +1062,56 @@ Nios II ``10m50-ghrd`` and ``nios2-generic-nommu`` machines (removed in 9.1)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The Nios II architecture was orphan.
+
+``shix`` (removed in 9.2)
+'''''''''''''''''''''''''
+
+The machine was unmaintained.
+
+Arm machines ``akita``, ``borzoi``, ``cheetah``, ``connex``, ``mainstone``, ``n800``, ``n810``, ``spitz``, ``terrier``, ``tosa``, ``verdex``, ``z2`` (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+QEMU included models of some machine types where the QEMU code that
+emulates their SoCs was very old and unmaintained. This code was
+blocking our ability to move forward with various changes across
+the codebase, and over many years nobody has been interested in
+trying to modernise it. We don't expect any of these machines to have
+a large number of users, because they're all modelling hardware that
+has now passed away into history. We are therefore dropping support
+for all machine types using the PXA2xx and OMAP2 SoCs. We are also
+dropping the ``cheetah`` OMAP1 board, because we don't have any
+test images for it and don't know of anybody who does.
+
+Aspeed ``tacoma-bmc`` machine (removed in 10.0)
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``tacoma-bmc`` machine was removed because it didn't bring much
+compared to the ``rainier-bmc`` machine. Also, the ``tacoma-bmc`` was
+a board used for bring up of the AST2600 SoC that never left the
+labs. It can be easily replaced by the ``rainier-bmc`` machine, which
+was the actual final product, or by the ``ast2600-evb`` with some
+tweaks.
+
+ppc ``ref405ep`` machine (removed in 10.0)
+''''''''''''''''''''''''''''''''''''''''''
+
+This machine was removed because PPC 405 CPU have no known users,
+firmware images are not available, OpenWRT dropped support in 2019,
+U-Boot in 2017, and Linux in 2024.
+
+Big-Endian variants of ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` machines (removed in 10.1)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Both the MicroBlaze ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` machines
+were added for little endian CPUs. Big endian support was never tested
+and likely never worked. Starting with QEMU v10.1, the machines are now
+only available as little-endian machines.
+
+Mips ``mipssim`` machine (removed in 10.2)
+''''''''''''''''''''''''''''''''''''''''''
+
+Linux dropped support for this virtual machine type in kernel v3.7, and
+there was also no binary available online to use with that board.
 
 linux-user mode CPUs
 --------------------
@@ -983,8 +1141,8 @@ processor IP (see `Intel discontinuance notification`_).
 TCG introspection features
 --------------------------
 
-TCG trace-events (since 6.2)
-''''''''''''''''''''''''''''
+TCG trace-events (removed in 7.0)
+'''''''''''''''''''''''''''''''''
 
 The ability to add new TCG trace points had bit rotted and as the
 feature can be replicated with TCG plugins it was removed. If
@@ -1032,6 +1190,11 @@ by using ``-machine graphics=off``.
 ''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The 'pvrdma' device and the whole RDMA subsystem have been removed.
+
+``-device sd-card,spec_version=1`` (since 10.2)
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+SD physical layer specification v2.00 supersedes the v1.10 one.
 
 Related binaries
 ----------------
@@ -1117,6 +1280,31 @@ The corresponding upstream server project is no longer maintained.
 Users are recommended to switch to an alternative distributed block
 device driver such as RBD.
 
+VFIO devices
+------------
+
+``-device vfio-calxeda-xgmac`` (since 10.2)
+'''''''''''''''''''''''''''''''''''''''''''
+The vfio-calxeda-xgmac device allows to assign a host Calxeda Highbank
+10Gb XGMAC Ethernet controller device ("calxeda,hb-xgmac" compatibility
+string) to a guest. Calxeda HW has been ewasted now and there is no point
+keeping that device.
+
+``-device vfio-amd-xgbe`` (since 10.2)
+''''''''''''''''''''''''''''''''''''''
+The vfio-amd-xgbe device allows to assign a host AMD 10GbE controller
+to a guest ("amd,xgbe-seattle-v1a" compatibility string). AMD "Seattle"
+is not supported anymore and there is no point keeping that device.
+
+``-device vfio-platform`` (since 10.2)
+''''''''''''''''''''''''''''''''''''''
+The vfio-platform device allows to assign a host platform device
+to a guest in a generic manner. Integrating a new device into
+the vfio-platform infrastructure requires some adaptation at
+both kernel and qemu level. No such attempt has been done for years
+and the conclusion is that vfio-platform has not got any traction.
+PCIe passthrough shall be the mainline solution.
+
 Tools
 -----
 
@@ -1128,5 +1316,23 @@ There is a newer Rust implementation of ``virtiofsd`` at
 stable for some time and is now widely used.
 The command line and feature set is very close to the removed
 C implementation.
+
+QEMU guest agent
+----------------
+
+``--blacklist`` command line option (removed in 9.1)
+''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+``--blacklist`` has been replaced by ``--block-rpcs`` (which is a better
+wording for what this option does). The short form ``-b`` still stays
+the same and thus is the preferred way for scripts that should run with
+both, older and future versions of QEMU.
+
+``blacklist`` config file option (removed in 9.1)
+'''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``blacklist`` config file option has been renamed to ``block-rpcs``
+(to be in sync with the renaming of the corresponding command line
+option).
 
 .. _Intel discontinuance notification: https://www.intel.com/content/www/us/en/content-details/781327/intel-is-discontinuing-ip-ordering-codes-listed-in-pdn2312-for-nios-ii-ip.html

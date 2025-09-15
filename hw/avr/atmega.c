@@ -12,13 +12,15 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "exec/memory.h"
-#include "exec/address-spaces.h"
-#include "sysemu/sysemu.h"
+#include "exec/target_page.h"
+#include "system/memory.h"
+#include "system/address-spaces.h"
+#include "system/system.h"
 #include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
 #include "qom/object.h"
 #include "hw/misc/unimp.h"
+#include "migration/vmstate.h"
 #include "atmega.h"
 
 enum AtmegaPeripheral {
@@ -256,8 +258,6 @@ static void atmega_realize(DeviceState *dev, Error **errp)
     char *devname;
     size_t i;
 
-    assert(mc->io_size <= 0x200);
-
     if (!s->xtal_freq_hz) {
         error_setg(errp, "\"xtal-frequency-hz\" property must be provided.");
         return;
@@ -272,11 +272,37 @@ static void atmega_realize(DeviceState *dev, Error **errp)
     qdev_realize(DEVICE(&s->cpu), NULL, &error_abort);
     cpudev = DEVICE(&s->cpu);
 
-    /* SRAM */
-    memory_region_init_ram(&s->sram, OBJECT(dev), "sram", mc->sram_size,
-                           &error_abort);
-    memory_region_add_subregion(get_system_memory(),
-                                OFFSET_DATA + mc->io_size, &s->sram);
+    /*
+     * SRAM
+     *
+     * Softmmu is not able mix i/o and ram on the same page.
+     * Therefore in all cases, the first page exclusively contains i/o.
+     *
+     * If the MCU's i/o region matches the page size, then we can simply
+     * allocate all ram starting at the second page.  Otherwise, we must
+     * allocate some ram as i/o to complete the first page.
+     */
+    assert(mc->io_size == 0x100 || mc->io_size == 0x200);
+    if (mc->io_size >= TARGET_PAGE_SIZE) {
+        memory_region_init_ram(&s->sram, OBJECT(dev), "sram", mc->sram_size,
+                               &error_abort);
+        memory_region_add_subregion(get_system_memory(),
+                                    OFFSET_DATA + mc->io_size, &s->sram);
+    } else {
+        int sram_io_size = TARGET_PAGE_SIZE - mc->io_size;
+        void *sram_io_mem = g_malloc0(sram_io_size);
+
+        memory_region_init_ram_device_ptr(&s->sram_io, OBJECT(dev), "sram-as-io",
+                                          sram_io_size, sram_io_mem);
+        memory_region_add_subregion(get_system_memory(),
+                                    OFFSET_DATA + mc->io_size, &s->sram_io);
+        vmstate_register_ram(&s->sram_io, dev);
+
+        memory_region_init_ram(&s->sram, OBJECT(dev), "sram",
+                               mc->sram_size - sram_io_size, &error_abort);
+        memory_region_add_subregion(get_system_memory(),
+                                    OFFSET_DATA + TARGET_PAGE_SIZE, &s->sram);
+    }
 
     /* Flash */
     memory_region_init_rom(&s->flash, OBJECT(dev),
@@ -387,13 +413,12 @@ static void atmega_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("avr-eeprom",       OFFSET_DATA + 0x03f, 3);
 }
 
-static Property atmega_props[] = {
+static const Property atmega_props[] = {
     DEFINE_PROP_UINT64("xtal-frequency-hz", AtmegaMcuState,
                        xtal_freq_hz, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void atmega_class_init(ObjectClass *oc, void *data)
+static void atmega_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
@@ -403,7 +428,7 @@ static void atmega_class_init(ObjectClass *oc, void *data)
     dc->user_creatable = false;
 }
 
-static void atmega168_class_init(ObjectClass *oc, void *data)
+static void atmega168_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -418,7 +443,7 @@ static void atmega168_class_init(ObjectClass *oc, void *data)
     amc->dev = dev168_328;
 };
 
-static void atmega328_class_init(ObjectClass *oc, void *data)
+static void atmega328_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -433,7 +458,7 @@ static void atmega328_class_init(ObjectClass *oc, void *data)
     amc->dev = dev168_328;
 };
 
-static void atmega164_class_init(ObjectClass *oc, void *data)
+static void atmega164_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -448,7 +473,7 @@ static void atmega164_class_init(ObjectClass *oc, void *data)
     amc->dev = dev164_1284;
 };
 
-static void atmega324_class_init(ObjectClass *oc, void *data)
+static void atmega324_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -463,7 +488,7 @@ static void atmega324_class_init(ObjectClass *oc, void *data)
     amc->dev = dev164_1284;
 };
 
-static void atmega644_class_init(ObjectClass *oc, void *data)
+static void atmega644_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -478,7 +503,7 @@ static void atmega644_class_init(ObjectClass *oc, void *data)
     amc->dev = dev164_1284;
 };
 
-static void atmega1284_class_init(ObjectClass *oc, void *data)
+static void atmega1284_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -493,7 +518,7 @@ static void atmega1284_class_init(ObjectClass *oc, void *data)
     amc->dev = dev164_1284;
 };
 
-static void atmega1280_class_init(ObjectClass *oc, void *data)
+static void atmega1280_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 
@@ -508,7 +533,7 @@ static void atmega1280_class_init(ObjectClass *oc, void *data)
     amc->dev = dev1280_2560;
 };
 
-static void atmega2560_class_init(ObjectClass *oc, void *data)
+static void atmega2560_class_init(ObjectClass *oc, const void *data)
 {
     AtmegaMcuClass *amc = ATMEGA_MCU_CLASS(oc);
 

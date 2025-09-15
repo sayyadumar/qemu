@@ -27,8 +27,8 @@
 #include "hw/boards.h"
 #include "hw/xen/xen-legacy-backend.h"
 #include "hw/xen/xen-bus.h"
-#include "sysemu/block-backend.h"
-#include "sysemu/sysemu.h"
+#include "system/block-backend.h"
+#include "system/system.h"
 
 static void xen_init_pv(MachineState *machine)
 {
@@ -49,8 +49,6 @@ static void xen_init_pv(MachineState *machine)
         exit(1);
         break;
     }
-
-    xen_be_register("vfb", &xen_framebuffer_ops);
 
     /* configure framebuffer */
     if (vga_interface_type == VGA_XENFB) {

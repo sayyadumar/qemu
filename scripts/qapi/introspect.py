@@ -11,6 +11,7 @@ This work is licensed under the terms of the GNU GPL, version 2.
 See the COPYING file in the top-level directory.
 """
 
+from dataclasses import dataclass
 from typing import (
     Any,
     Dict,
@@ -27,8 +28,8 @@ from .gen import QAPISchemaMonolithicCVisitor
 from .schema import (
     QAPISchema,
     QAPISchemaAlternatives,
-    QAPISchemaBranches,
     QAPISchemaArrayType,
+    QAPISchemaBranches,
     QAPISchemaBuiltinType,
     QAPISchemaEntity,
     QAPISchemaEnumMember,
@@ -79,19 +80,16 @@ SchemaInfoCommand = Dict[str, object]
 _ValueT = TypeVar('_ValueT', bound=_Value)
 
 
+@dataclass
 class Annotated(Generic[_ValueT]):
     """
     Annotated generally contains a SchemaInfo-like type (as a dict),
     But it also used to wrap comments/ifconds around scalar leaf values,
     for the benefit of features and enums.
     """
-    # TODO: Remove after Python 3.7 adds @dataclass:
-    # pylint: disable=too-few-public-methods
-    def __init__(self, value: _ValueT, ifcond: QAPISchemaIfCond,
-                 comment: Optional[str] = None):
-        self.value = value
-        self.comment: Optional[str] = comment
-        self.ifcond = ifcond
+    value: _ValueT
+    ifcond: QAPISchemaIfCond
+    comment: Optional[str] = None
 
 
 def _tree_to_qlit(obj: JSONValue,
@@ -197,7 +195,7 @@ class QAPISchemaGenIntrospectVisitor(QAPISchemaMonolithicCVisitor):
         # generate C
         name = c_name(self._prefix, protect=False) + 'qmp_schema_qlit'
         self._genh.add(mcgen('''
-#include "qapi/qmp/qlit.h"
+#include "qobject/qlit.h"
 
 extern const QLitObject %(c_name)s;
 ''',
@@ -233,9 +231,9 @@ const QLitObject %(c_name)s = %(c_string)s;
             typ = type_int
         elif (isinstance(typ, QAPISchemaArrayType) and
               typ.element_type.json_type() == 'int'):
-            type_intList = self._schema.lookup_type('intList')
-            assert type_intList
-            typ = type_intList
+            type_intlist = self._schema.lookup_type('intList')
+            assert type_intlist
+            typ = type_intlist
         # Add type to work queue if new
         if typ not in self._used_types:
             self._used_types.append(typ)

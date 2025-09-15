@@ -20,7 +20,6 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "qemu/host-utils.h"
 #include "exec/helper-proto.h"
 #include "qapi/error.h"
@@ -187,6 +186,7 @@ void helper_aaa(CPUX86State *env)
     }
     env->regs[R_EAX] = (env->regs[R_EAX] & ~0xffff) | al | (ah << 8);
     CC_SRC = eflags;
+    CC_OP = CC_OP_EFLAGS;
 }
 
 void helper_aas(CPUX86State *env)
@@ -211,6 +211,7 @@ void helper_aas(CPUX86State *env)
     }
     env->regs[R_EAX] = (env->regs[R_EAX] & ~0xffff) | al | (ah << 8);
     CC_SRC = eflags;
+    CC_OP = CC_OP_EFLAGS;
 }
 
 void helper_daa(CPUX86State *env)
@@ -235,9 +236,10 @@ void helper_daa(CPUX86State *env)
     env->regs[R_EAX] = (env->regs[R_EAX] & ~0xff) | al;
     /* well, speed is not an issue here, so we compute the flags by hand */
     eflags |= (al == 0) << 6; /* zf */
-    eflags |= parity_table[al]; /* pf */
+    eflags |= compute_pf(al);
     eflags |= (al & 0x80); /* sf */
     CC_SRC = eflags;
+    CC_OP = CC_OP_EFLAGS;
 }
 
 void helper_das(CPUX86State *env)
@@ -266,9 +268,10 @@ void helper_das(CPUX86State *env)
     env->regs[R_EAX] = (env->regs[R_EAX] & ~0xff) | al;
     /* well, speed is not an issue here, so we compute the flags by hand */
     eflags |= (al == 0) << 6; /* zf */
-    eflags |= parity_table[al]; /* pf */
+    eflags |= compute_pf(al);
     eflags |= (al & 0x80); /* sf */
     CC_SRC = eflags;
+    CC_OP = CC_OP_EFLAGS;
 }
 
 #ifdef TARGET_X86_64
@@ -449,10 +452,11 @@ target_ulong HELPER(rdrand)(CPUX86State *env)
         error_free(err);
         /* Failure clears CF and all other flags, and returns 0.  */
         env->cc_src = 0;
-        return 0;
+        ret = 0;
+    } else {
+        /* Success sets CF and clears all others.  */
+        env->cc_src = CC_C;
     }
-
-    /* Success sets CF and clears all others.  */
-    env->cc_src = CC_C;
+    env->cc_op = CC_OP_EFLAGS;
     return ret;
 }

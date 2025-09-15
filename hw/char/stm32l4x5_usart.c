@@ -56,7 +56,7 @@ REG32(CR1, 0x00)
     FIELD(CR1, UE, 0, 1)     /* USART enable */
 REG32(CR2, 0x04)
     FIELD(CR2, ADD_1, 28, 4)    /* ADD[7:4] */
-    FIELD(CR2, ADD_0, 24, 1)    /* ADD[3:0] */
+    FIELD(CR2, ADD_0, 24, 4)    /* ADD[3:0] */
     FIELD(CR2, RTOEN, 23, 1)    /* Receiver timeout enable */
     FIELD(CR2, ABRMOD, 21, 2)   /* Auto baud rate mode */
     FIELD(CR2, ABREN, 20, 1)    /* Auto baud rate enable */
@@ -153,6 +153,21 @@ REG32(RDR, 0x24)
     FIELD(RDR, RDR, 0, 9)
 REG32(TDR, 0x28)
     FIELD(TDR, TDR, 0, 9)
+
+static void stm32l4x5_update_isr(Stm32l4x5UsartBaseState *s)
+{
+    if (s->cr1 & R_CR1_TE_MASK) {
+        s->isr |= R_ISR_TEACK_MASK;
+    } else {
+        s->isr &= ~R_ISR_TEACK_MASK;
+    }
+
+    if (s->cr1 & R_CR1_RE_MASK) {
+        s->isr |= R_ISR_REACK_MASK;
+    } else {
+        s->isr &= ~R_ISR_REACK_MASK;
+    }
+}
 
 static void stm32l4x5_update_irq(Stm32l4x5UsartBaseState *s)
 {
@@ -456,6 +471,7 @@ static void stm32l4x5_usart_base_write(void *opaque, hwaddr addr,
     case A_CR1:
         s->cr1 = value;
         stm32l4x5_update_params(s);
+        stm32l4x5_update_isr(s);
         stm32l4x5_update_irq(s);
         return;
     case A_CR2:
@@ -518,9 +534,8 @@ static const MemoryRegionOps stm32l4x5_usart_base_ops = {
     },
 };
 
-static Property stm32l4x5_usart_base_properties[] = {
+static const Property stm32l4x5_usart_base_properties[] = {
     DEFINE_PROP_CHR("chardev", Stm32l4x5UsartBaseState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void stm32l4x5_usart_base_init(Object *obj)
@@ -579,7 +594,8 @@ static void stm32l4x5_usart_base_realize(DeviceState *dev, Error **errp)
                              s, NULL, true);
 }
 
-static void stm32l4x5_usart_base_class_init(ObjectClass *klass, void *data)
+static void stm32l4x5_usart_base_class_init(ObjectClass *klass,
+                                            const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -590,21 +606,21 @@ static void stm32l4x5_usart_base_class_init(ObjectClass *klass, void *data)
     dc->vmsd = &vmstate_stm32l4x5_usart_base;
 }
 
-static void stm32l4x5_usart_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5_usart_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5UsartBaseClass *subc = STM32L4X5_USART_BASE_CLASS(oc);
 
     subc->type = STM32L4x5_USART;
 }
 
-static void stm32l4x5_uart_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5_uart_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5UsartBaseClass *subc = STM32L4X5_USART_BASE_CLASS(oc);
 
     subc->type = STM32L4x5_UART;
 }
 
-static void stm32l4x5_lpuart_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5_lpuart_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5UsartBaseClass *subc = STM32L4X5_USART_BASE_CLASS(oc);
 

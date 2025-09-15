@@ -39,8 +39,8 @@
 #include "qemu/sockets.h"
 #include "qapi/qapi-visit-sockets.h"
 #include "qapi/qapi-visit-block-core.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qstring.h"
+#include "qobject/qdict.h"
+#include "qobject/qstring.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qobject-output-visitor.h"
 #include "trace.h"
@@ -364,7 +364,7 @@ static unsigned hex2decimal(char ch)
         return 10 + (ch - 'A');
     }
 
-    return -1;
+    return UINT_MAX;
 }
 
 /* Compare the binary fingerprint (hash of host key) with the
@@ -376,13 +376,15 @@ static int compare_fingerprint(const unsigned char *fingerprint, size_t len,
     unsigned c;
 
     while (len > 0) {
+        unsigned c0, c1;
         while (*host_key_check == ':')
             host_key_check++;
-        if (!qemu_isxdigit(host_key_check[0]) ||
-            !qemu_isxdigit(host_key_check[1]))
+        c0 = hex2decimal(host_key_check[0]);
+        c1 = hex2decimal(host_key_check[1]);
+        if (c0 > 0xf || c1 > 0xf) {
             return 1;
-        c = hex2decimal(host_key_check[0]) * 16 +
-            hex2decimal(host_key_check[1]);
+        }
+        c = c0 * 16 + c1;
         if (c - *fingerprint != 0)
             return c - *fingerprint;
         fingerprint++;
@@ -474,7 +476,6 @@ static int check_host_key(BDRVSSHState *s, SshHostKeyCheck *hkc, Error **errp)
                                        errp);
         }
         g_assert_not_reached();
-        break;
     case SSH_HOST_KEY_CHECK_MODE_KNOWN_HOSTS:
         return check_host_key_knownhosts(s, errp);
     default:
@@ -837,8 +838,8 @@ static int connect_to_ssh(BDRVSSHState *s, BlockdevOptionsSsh *opts,
     return ret;
 }
 
-static int ssh_file_open(BlockDriverState *bs, QDict *options, int bdrv_flags,
-                         Error **errp)
+static int ssh_open(BlockDriverState *bs, QDict *options, int bdrv_flags,
+                    Error **errp)
 {
     BDRVSSHState *s = bs->opaque;
     BlockdevOptionsSsh *opts;
@@ -864,9 +865,6 @@ static int ssh_file_open(BlockDriverState *bs, QDict *options, int bdrv_flags,
     if (ret < 0) {
         goto err;
     }
-
-    /* Go non-blocking. */
-    ssh_set_blocking(s->session, 0);
 
     if (s->attrs->type == SSH_FILEXFER_TYPE_REGULAR) {
         bs->supported_truncate_flags = BDRV_REQ_ZERO_WRITE;
@@ -1362,7 +1360,7 @@ static BlockDriver bdrv_ssh = {
     .protocol_name                = "ssh",
     .instance_size                = sizeof(BDRVSSHState),
     .bdrv_parse_filename          = ssh_parse_filename,
-    .bdrv_file_open               = ssh_file_open,
+    .bdrv_open                    = ssh_open,
     .bdrv_co_create               = ssh_co_create,
     .bdrv_co_create_opts          = ssh_co_create_opts,
     .bdrv_close                   = ssh_close,
