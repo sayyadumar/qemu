@@ -35,26 +35,29 @@
 #define USART_BRRL 0x04
 
 /* Relevant bits in registers. */
-#define USART_CSRA_RXC    (1 << 7)
-#define USART_CSRA_TXC    (1 << 6)
-#define USART_CSRA_DRE    (1 << 5)
-#define USART_CSRA_MPCM   (1 << 0)
 
-#define USART_CSRB_RXCIE  (1 << 7)
-#define USART_CSRB_TXCIE  (1 << 6)
-#define USART_CSRB_DREIE  (1 << 5)
-#define USART_CSRB_RXEN   (1 << 4)
-#define USART_CSRB_TXEN   (1 << 3)
-#define USART_CSRB_CSZ2   (1 << 2)
-#define USART_CSRB_RXB8   (1 << 1)
-#define USART_CSRB_TXB8   (1 << 0)
+#define USART_CSRA_RXC    (1 << 7) // Receive Complete
+#define USART_CSRA_TXC    (1 << 6) // Transmit Complete
+#define USART_CSRA_DRE    (1 << 5) // Data Register Empty
+#define USART_CSRA_MPCM   (1 << 0) // Multi-processor Communication Mode
 
-#define USART_CSRC_MSEL1  (1 << 7)
-#define USART_CSRC_MSEL0  (1 << 6)
-#define USART_CSRC_PM1    (1 << 5)
-#define USART_CSRC_PM0    (1 << 4)
-#define USART_CSRC_CSZ1   (1 << 2)
-#define USART_CSRC_CSZ0   (1 << 1)
+
+#define USART_CSRB_RXCIE  (1 << 7) // RX Complete Interrupt Enable
+#define USART_CSRB_TXCIE  (1 << 6) // TX Complete Interrupt Enable
+#define USART_CSRB_DREIE  (1 << 5) // Data Register Empty Interrupt Enable
+#define USART_CSRB_RXEN   (1 << 4) // Receiver Enable
+#define USART_CSRB_TXEN   (1 << 3) // Transmitter Enable
+#define USART_CSRB_CSZ2   (1 << 2) // Character Size bit 2
+#define USART_CSRB_RXB8   (1 << 1) // Receive Data Bit 8
+#define USART_CSRB_TXB8   (1 << 0) // Transmit Data Bit 8
+
+
+#define USART_CSRC_MSEL1  (1 << 7) // Mode Select bit 1
+#define USART_CSRC_MSEL0  (1 << 6) // Mode Select bit 0
+#define USART_CSRC_PM1    (1 << 5) // Parity Mode bit 1
+#define USART_CSRC_PM0    (1 << 4) // Parity Mode bit 0
+#define USART_CSRC_CSZ1   (1 << 2) // Character Size bit 1
+#define USART_CSRC_CSZ0   (1 << 1) // Character Size bit 0
 
 #define TYPE_AVR_USART "avr-usart"
 OBJECT_DECLARE_SIMPLE_TYPE(AVRUsartState, AVR_USART)

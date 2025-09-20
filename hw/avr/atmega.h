@@ -12,6 +12,7 @@
 #define HW_AVR_ATMEGA_H
 
 #include "hw/char/avr_usart.h"
+#include "hw/i2c/avr_twi.h"
 #include "hw/timer/avr_timer16.h"
 #include "hw/misc/avr_power.h"
 #include "target/avr/cpu.h"
@@ -50,6 +51,7 @@ struct AtmegaMcuState {
     AVRMaskState pwr[POWER_MAX];
     AVRUsartState usart[USART_MAX];
     AVRTimer16State timer[TIMER_MAX];
+    AVRTWIState twi;
     uint64_t xtal_freq_hz;
 };
 

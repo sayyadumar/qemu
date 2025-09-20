@@ -29,6 +29,7 @@ enum AtmegaPeripheral {
     GPIOG, GPIOH, GPIOI, GPIOJ, GPIOK, GPIOL,
     USART0, USART1, USART2, USART3,
     TIMER0, TIMER1, TIMER2, TIMER3, TIMER4, TIMER5,
+    TWI,
     PERIFMAX
 };
 
@@ -76,6 +77,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOD]         = {  0x29 },
     [GPIOC]         = {  0x26 },
     [GPIOB]         = {  0x23 },
+    [TWI]           = {  0xb8, POWER0, 7},
 },dev164_1284[PERIFMAX] = {
     [USART1]        = {  0xc8, POWER0, 4 },
     [USART0]        = {  0xc0, POWER0, 1 },
@@ -89,6 +91,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOC]         = {  0x26 },
     [GPIOB]         = {  0x23 },
     [GPIOA]         = {  0x20 },
+    [TWI]           = {  0xb8, POWER0, 7},
 }, dev1280_2560[PERIFMAX] = {
     [USART3]        = { 0x130, POWER1, 2 },
     [TIMER5]        = { 0x120, POWER1, 5, 0x73, 0x3a, true },
@@ -113,6 +116,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOC]         = {  0x26 },
     [GPIOB]         = {  0x23 },
     [GPIOA]         = {  0x20 },
+    [TWI]           = {  0xb8, POWER0, 7},
 };
 
 enum AtmegaIrq {
@@ -132,6 +136,7 @@ enum AtmegaIrq {
         TIMER4_COMPC_IRQ, TIMER4_OVF_IRQ,
     TIMER5_CAPT_IRQ, TIMER5_COMPA_IRQ, TIMER5_COMPB_IRQ,
         TIMER5_COMPC_IRQ, TIMER5_OVF_IRQ,
+        TWI_IRQ,
     IRQ_COUNT
 };
 
@@ -160,6 +165,7 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART0_RXC_IRQ]        = 19,
     [USART0_DRE_IRQ]        = 20,
     [USART0_TXC_IRQ]        = 21,
+    [TWI_IRQ]               = 25,
 },irq164_1284[IRQ_COUNT] = {
     [TIMER2_COMPA_IRQ]      = 10,
     [TIMER2_COMPB_IRQ]      = 11,
@@ -174,6 +180,7 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART0_RXC_IRQ]        = 21,
     [USART0_DRE_IRQ]        = 22,
     [USART0_TXC_IRQ]        = 23,
+    [TWI_IRQ]               = 27,
     [USART1_RXC_IRQ]        = 29,
     [USART1_DRE_IRQ]        = 30,
     [USART1_TXC_IRQ]        = 31,
@@ -200,6 +207,7 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART1_RXC_IRQ]        = 37,
     [USART1_DRE_IRQ]        = 38,
     [USART1_TXC_IRQ]        = 39,
+    [TWI_IRQ]               = 40,
     [TIMER4_CAPT_IRQ]       = 42,
     [TIMER4_COMPA_IRQ]      = 43,
     [TIMER4_COMPB_IRQ]      = 44,
@@ -405,7 +413,21 @@ static void atmega_realize(DeviceState *dev, Error **errp)
         g_free(devname);
     }
 
-    create_unimplemented_device("avr-twi",          OFFSET_DATA + 0x0b8, 6);
+    /* Two Wire Serial Interface/ I2C*/
+    {
+        int idx = TWI;
+        if (mc->dev[idx].addr) {
+            devname = g_strdup_printf("avr-twi");
+            object_initialize_child(OBJECT(dev), devname, &s->twi,
+                                    TYPE_AVR_TWI);
+            sbd = SYS_BUS_DEVICE(&s->twi);
+            sysbus_realize(sbd, &error_abort);
+            sysbus_mmio_map(sbd, 0, OFFSET_DATA + mc->dev[idx].addr);
+            connect_peripheral_irq(mc, sbd, 0, cpudev, TWI_IRQ);
+            connect_power_reduction_gpio(s, mc, DEVICE(&s->twi), idx);
+            g_free(devname);
+        }
+    }
     create_unimplemented_device("avr-adc",          OFFSET_DATA + 0x078, 8);
     create_unimplemented_device("avr-ext-mem-ctrl", OFFSET_DATA + 0x074, 2);
     create_unimplemented_device("avr-watchdog",     OFFSET_DATA + 0x060, 1);
