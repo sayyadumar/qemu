@@ -151,6 +151,156 @@ FLOATOP(fsub, float32_sub)
 FLOATOP(fmul, float32_mul)
 FLOATOP(fdiv, float32_div)
 
+/* RXv2 double-precision FPU helpers */
+static void update_fpsw64(CPURXState *env, float64 ret, uintptr_t retaddr)
+{
+    int xcpt, cause, enable;
+    uint64_t bits = float64_val(ret);
+
+    /* Z=1 when result is ±0 (both halves zero except sign bit) */
+    env->psw_z = (uint32_t)((bits >> 32) & ~(1u << 31)) | (uint32_t)bits;
+    /* S uses sign bit from high word */
+    env->psw_s = (uint32_t)(bits >> 32);
+
+    xcpt = get_float_exception_flags(&env->fp_status);
+    env->fpsw = FIELD_DP32(env->fpsw, FPSW, CAUSE, 0);
+    if (unlikely(xcpt)) {
+        if (xcpt & float_flag_invalid) {
+            SET_FPSW(V);
+        }
+        if (xcpt & float_flag_divbyzero) {
+            SET_FPSW(Z);
+        }
+        if (xcpt & float_flag_overflow) {
+            SET_FPSW(O);
+        }
+        if (xcpt & float_flag_underflow) {
+            SET_FPSW(U);
+        }
+        if (xcpt & float_flag_inexact) {
+            SET_FPSW(X);
+        }
+        if ((xcpt & (float_flag_input_denormal_flushed
+                     | float_flag_output_denormal_flushed))
+            && !FIELD_EX32(env->fpsw, FPSW, DN)) {
+            env->fpsw = FIELD_DP32(env->fpsw, FPSW, CE, 1);
+        }
+        if (FIELD_EX32(env->fpsw, FPSW, FLAGS) != 0) {
+            env->fpsw = FIELD_DP32(env->fpsw, FPSW, FS, 1);
+        }
+        cause = FIELD_EX32(env->fpsw, FPSW, CAUSE);
+        enable = FIELD_EX32(env->fpsw, FPSW, ENABLE);
+        enable |= 1 << 5;
+        if (cause & enable) {
+            raise_exception(env, 21, retaddr);
+        }
+    }
+}
+
+#define FLOATOP64(op, func)                                              \
+    float64 helper_##op(CPURXState *env, float64 t0, float64 t1)        \
+    {                                                                    \
+        float64 ret;                                                     \
+        ret = func(t0, t1, &env->fp_status);                             \
+        update_fpsw64(env, ret, GETPC());                                \
+        return ret;                                                      \
+    }
+
+FLOATOP64(dadd, float64_add)
+FLOATOP64(dsub, float64_sub)
+FLOATOP64(dmul, float64_mul)
+FLOATOP64(ddiv, float64_div)
+
+void helper_dcmp(CPURXState *env, float64 t0, float64 t1)
+{
+    int st;
+    st = float64_compare(t0, t1, &env->fp_status);
+    update_fpsw64(env, float64_zero, GETPC());
+    env->psw_z = 1;
+    env->psw_s = env->psw_o = 0;
+    switch (st) {
+    case float_relation_equal:
+        env->psw_z = 0;
+        break;
+    case float_relation_less:
+        env->psw_s = -1;
+        break;
+    case float_relation_unordered:
+        env->psw_o = -1;
+        break;
+    }
+}
+
+float64 helper_dabs(CPURXState *env, float64 t0)
+{
+    float64 ret = float64_abs(t0);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
+float64 helper_dneg(CPURXState *env, float64 t0)
+{
+    float64 ret = float64_chs(t0);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
+float64 helper_dsqrt(CPURXState *env, float64 t0)
+{
+    float64 ret = float64_sqrt(t0, &env->fp_status);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
+float64 helper_dround(CPURXState *env, float64 t0)
+{
+    float64 ret = float64_round_to_int(t0, &env->fp_status);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
+uint32_t helper_dtoi(CPURXState *env, float64 t0)
+{
+    uint32_t ret = float64_to_int32_round_to_zero(t0, &env->fp_status);
+    update_fpsw64(env, float64_zero, GETPC());
+    return ret;
+}
+
+uint32_t helper_dtou(CPURXState *env, float64 t0)
+{
+    uint32_t ret = float64_to_uint32_round_to_zero(t0, &env->fp_status);
+    update_fpsw64(env, float64_zero, GETPC());
+    return ret;
+}
+
+float32 helper_dtof(CPURXState *env, float64 t0)
+{
+    float32 ret = float64_to_float32(t0, &env->fp_status);
+    update_fpsw(env, ret, GETPC());
+    return ret;
+}
+
+float64 helper_itod(CPURXState *env, uint32_t t0)
+{
+    float64 ret = int32_to_float64((int32_t)t0, &env->fp_status);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
+float64 helper_utod(CPURXState *env, uint32_t t0)
+{
+    float64 ret = uint32_to_float64(t0, &env->fp_status);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
+float64 helper_ftod(CPURXState *env, float32 t0)
+{
+    float64 ret = float32_to_float64(t0, &env->fp_status);
+    update_fpsw64(env, ret, GETPC());
+    return ret;
+}
+
 void helper_fcmp(CPURXState *env, float32 t0, float32 t1)
 {
     int st;
