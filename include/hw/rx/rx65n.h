@@ -32,6 +32,7 @@
 #include "hw/char/renesas_sci.h"
 #include "hw/adc/renesas_s12ad.h"
 #include "hw/ssi/renesas_rspi.h"
+#include "hw/net/renesas_etherc.h"
 #include "qom/object.h"
 
 #define TYPE_RX65N_MCU      "rx65n-mcu"
@@ -67,6 +68,7 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_MTU3_BASE     0x000C1200
 #define RX65N_S12AD_BASE    0x00089000
 #define RX65N_RSPI0_BASE    0x000D0100
+#define RX65N_ETHERC_BASE   0x000C0000
 
 /* Phase 1: minimal peripheral counts (extend in later phases) */
 #define RX65N_NR_TMR    2
@@ -86,6 +88,7 @@ struct RX65NState {
     RXMTU3State mtu3;
     RX65NS12ADState s12ad;
     RX65NRSPIState rspi;
+    RX65NEthercState etherc;
 
     MemoryRegion *sysmem;
     bool kernel;

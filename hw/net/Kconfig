@@ -116,6 +116,9 @@ config SUNGEM
     bool
     depends on PCI
 
+config RENESAS_ETHERC
+    bool
+
 config COLDFIRE
     bool
 

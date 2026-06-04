@@ -43,6 +43,7 @@
 #define RX65N_MTU3_IRQ  156   /* TGIA3; ch3: 156-160, ch4: 161-165 */
 #define RX65N_S12AD_IRQ 98    /* S12ADI0=98, GBADI0=99 */
 #define RX65N_RSPI0_IRQ 44    /* SPEI0=44, SPRI0=45, SPTI0=46, SPII0=47 */
+#define RX65N_ETHERC_IRQ 32   /* EINT0 (level-triggered) */
 
 #define RX65N_XTAL_MIN_HZ  (8  * 1000 * 1000)
 #define RX65N_XTAL_MAX_HZ  (24 * 1000 * 1000)
@@ -260,6 +261,19 @@ static void register_rspi(RX65NState *s)
     sysbus_mmio_map(rspi, 0, RX65N_RSPI0_BASE);
 }
 
+static void register_etherc(RX65NState *s)
+{
+    SysBusDevice *etherc;
+
+    object_initialize_child(OBJECT(s), "etherc", &s->etherc, TYPE_RENESAS_ETHERC);
+    etherc = SYS_BUS_DEVICE(&s->etherc);
+    sysbus_realize(etherc, &error_abort);
+
+    sysbus_connect_irq(etherc, 0,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_ETHERC_IRQ));
+    sysbus_mmio_map(etherc, 0, RX65N_ETHERC_BASE);
+}
+
 static void rx65n_realize(DeviceState *dev, Error **errp)
 {
     RX65NState *s = RX65N_MCU(dev);
@@ -303,7 +317,6 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     /* Stub out unimplemented peripheral regions so accesses log warnings */
     create_unimplemented_device("rx65n.usb",    0x000A0000, 0x10000);
     create_unimplemented_device("rx65n.rscan",  0x000A8000, 0x10000);
-    create_unimplemented_device("rx65n.etherc", 0x000C0000, 0x10000);
     create_unimplemented_device("rx65n.gpt",    0x000C2000, 0x01000);
 
     /* Initialize CPU */
@@ -320,6 +333,7 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_mtu3(s);
     register_s12ad(s);
     register_rspi(s);
+    register_etherc(s);
 }
 
 static const Property rx65n_properties[] = {
