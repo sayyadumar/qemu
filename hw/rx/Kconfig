@@ -11,3 +11,18 @@ config RX_GDBSIM
     depends on RX && FDT
     select DEVICE_TREE
     select RX62N_MCU
+
+config RX65N_MCU
+    bool
+    select RX_ICU
+    select RENESAS_TMR
+    select RENESAS_CMT
+    select RENESAS_SCI
+    select UNIMP
+
+config RX65N_EVK
+    bool
+    default y
+    depends on RX && FDT
+    select DEVICE_TREE
+    select RX65N_MCU
