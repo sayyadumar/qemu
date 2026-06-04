@@ -1193,6 +1193,115 @@ static bool trans_ITOF(DisasContext *ctx, arg_ITOF *a)
     return true;
 }
 
+/* RXv2 DPFPU disassembly */
+static bool trans_DADD(DisasContext *ctx, arg_DADD *a)
+{
+    prt("dadd\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    return true;
+}
+
+static bool trans_DSUB(DisasContext *ctx, arg_DSUB *a)
+{
+    prt("dsub\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    return true;
+}
+
+static bool trans_DMUL(DisasContext *ctx, arg_DMUL *a)
+{
+    prt("dmul\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    return true;
+}
+
+static bool trans_DDIV(DisasContext *ctx, arg_DDIV *a)
+{
+    prt("ddiv\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    return true;
+}
+
+static bool trans_DCMP(DisasContext *ctx, arg_DCMP *a)
+{
+    prt("dcmp\tdr%d, %d, dr%d", a->drs2, a->cd, a->drs1);
+    return true;
+}
+
+static bool trans_DMOV(DisasContext *ctx, arg_DMOV *a)
+{
+    prt("dmov\tdr%d, dr%d", a->drs, a->drd);
+    return true;
+}
+
+static bool trans_DABS(DisasContext *ctx, arg_DABS *a)
+{
+    prt("dabs\tdr%d, dr%d", a->drs, a->drd);
+    return true;
+}
+
+static bool trans_DNEG(DisasContext *ctx, arg_DNEG *a)
+{
+    prt("dneg\tdr%d, dr%d", a->drs, a->drd);
+    return true;
+}
+
+static bool trans_DSQRT(DisasContext *ctx, arg_DSQRT *a)
+{
+    prt("dsqrt\tdr%d, dr%d", a->drs, a->drd);
+    return true;
+}
+
+static bool trans_DROUND(DisasContext *ctx, arg_DROUND *a)
+{
+    prt("dround\tdr%d, dr%d", a->drs, a->drd);
+    return true;
+}
+
+static bool trans_DTOI(DisasContext *ctx, arg_DTOI *a)
+{
+    prt("dtoi\tdr%d, r%d", a->drs, a->rd);
+    return true;
+}
+
+static bool trans_DTOU(DisasContext *ctx, arg_DTOU *a)
+{
+    prt("dtou\tdr%d, r%d", a->drs, a->rd);
+    return true;
+}
+
+static bool trans_DTOF(DisasContext *ctx, arg_DTOF *a)
+{
+    prt("dtof\tdr%d, r%d", a->drs, a->rd);
+    return true;
+}
+
+static bool trans_ITOD(DisasContext *ctx, arg_ITOD *a)
+{
+    prt("itod\tr%d, dr%d", a->rs, a->drd);
+    return true;
+}
+
+static bool trans_UTOD(DisasContext *ctx, arg_UTOD *a)
+{
+    prt("utod\tr%d, dr%d", a->rs, a->drd);
+    return true;
+}
+
+static bool trans_FTOD(DisasContext *ctx, arg_FTOD *a)
+{
+    prt("ftod\tr%d, dr%d", a->rs, a->drd);
+    return true;
+}
+
+static bool trans_DPUSHM(DisasContext *ctx, arg_DPUSHM *a)
+{
+    prt("dpushm.d\tdr%d-dr%d", a->drd, a->drd + a->rnum - 1);
+    return true;
+}
+
+static bool trans_DPOPM(DisasContext *ctx, arg_DPOPM *a)
+{
+    prt("dpopm.d\tdr%d-dr%d", a->drd, a->drd + a->rnum - 1);
+    return true;
+}
+
 #define BOP_IM(name, reg)                                       \
     do {                                                        \
         char dsp[8];                                            \

@@ -29,6 +29,13 @@
 &mi		rs ld mi imm
 &mr		rs ld mi rs2
 &mcnd		ld sz rd cd
+# RXv2 DPFPU argument types
+&drr		drd drs
+&drrr		drd drs1 drs2
+&dcmpd		drs1 drs2 cd
+&dri		rd drs
+&idr		rs drd
+&dppm		drd rnum
 ########
 %b1_bdsp	24:3 !function=bdsp_s
 
@@ -619,3 +626,38 @@ XOR_ir		1111 1101 0111 ..00 1101 ....		@b3_rd_li
 XOR_mr		1111 1100 0011 01.. .... ....		@b3_rd_ld_ub
 # XOR dsp[rs], rd
 XOR_mr		0000 0110 ..10 00.. 0000 1101 .... ....	@b4_rd_ldmi
+
+########
+# RXv2 DPFPU instructions
+# All 4-byte register-to-register ops use prefix 0x76 0x90
+#
+# Binary ops: 0111 0110 1001 0000 drs2:4 op:4 drd:4 drs1:4
+# Result: DRdrd = DRdrs1 op DRdrs2
+DADD		0111 0110 1001 0000 drs2:4 0000 drd:4 drs1:4	&drrr
+DSUB		0111 0110 1001 0000 drs2:4 0001 drd:4 drs1:4	&drrr
+DMUL		0111 0110 1001 0000 drs2:4 0010 drd:4 drs1:4	&drrr
+DDIV		0111 0110 1001 0000 drs2:4 0101 drd:4 drs1:4	&drrr
+DCMP		0111 0110 1001 0000 drs2:4 1000 cd:4  drs1:4	&dcmpd
+
+# Unary ops group A (1100): DMOV, DABS, DNEG
+DMOV		0111 0110 1001 0000 drs:4 1100 drd:4 0000	&drr
+DABS		0111 0110 1001 0000 drs:4 1100 drd:4 0001	&drr
+DNEG		0111 0110 1001 0000 drs:4 1100 drd:4 0010	&drr
+
+# Unary ops group B (1101): DSQRT, DROUND; DR-to-GPR conversions
+DSQRT		0111 0110 1001 0000 drs:4 1101 drd:4 0000	&drr
+DROUND		0111 0110 1001 0000 drs:4 1101 drd:4 1101	&drr
+# DTOI/DTOU/DTOF write to a regular GPR (rd), not a DR pair
+DTOI		0111 0110 1001 0000 drs:4 1101 rd:4  1000	&dri
+DTOU		0111 0110 1001 0000 drs:4 1101 rd:4  1001	&dri
+DTOF		0111 0110 1001 0000 drs:4 1101 rd:4  1100	&dri
+
+# GPR/float-to-DR conversions using 0xFD 0x77 prefix
+# Note: 0xFD 0x77 with byte2 in 0x00-0x0F is MVTC_i (li=01); no conflict with 0x8x
+ITOD		1111 1101 0111 0111 1000 rs:4 drd:4 1001	&idr
+FTOD		1111 1101 0111 0111 1000 rs:4 drd:4 1010	&idr
+UTOD		1111 1101 0111 0111 1000 rs:4 drd:4 1101	&idr
+
+# DPUSHM/DPOPM: push/pop range of DR registers (3-byte: 0x75 prefix)
+DPUSHM		0111 0101 1011 0000 drd:4 rnum:4		&dppm
+DPOPM		0111 0101 1011 1000 drd:4 rnum:4		&dppm
