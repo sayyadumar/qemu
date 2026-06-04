@@ -1,4 +1,5 @@
 /GNUmakefile
+/subprojects/.wraplock
 /build/
 /.cache/
 /.vscode/
