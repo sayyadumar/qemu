@@ -18,6 +18,9 @@ config RX65N_MCU
     select RENESAS_TMR
     select RENESAS_CMT
     select RENESAS_SCI
+    select RENESAS_MTU3
+    select RENESAS_S12AD
+    select RENESAS_RSPI
     select UNIMP
 
 config RX65N_EVK

@@ -40,6 +40,9 @@
 #define RX65N_TMR_IRQ   174
 #define RX65N_CMT_IRQ   28
 #define RX65N_SCI_IRQ   214
+#define RX65N_MTU3_IRQ  156   /* TGIA3; ch3: 156-160, ch4: 161-165 */
+#define RX65N_S12AD_IRQ 98    /* S12ADI0=98, GBADI0=99 */
+#define RX65N_RSPI0_IRQ 44    /* SPEI0=44, SPRI0=45, SPTI0=46, SPII0=47 */
 
 #define RX65N_XTAL_MIN_HZ  (8  * 1000 * 1000)
 #define RX65N_XTAL_MAX_HZ  (24 * 1000 * 1000)
@@ -203,6 +206,60 @@ static void register_sci(RX65NState *s, int unit)
     sysbus_mmio_map(sci, 0, RX65N_SCI_BASE + unit * 0x08);
 }
 
+static void register_mtu3(RX65NState *s)
+{
+    SysBusDevice *mtu3;
+    int i;
+
+    object_initialize_child(OBJECT(s), "mtu3", &s->mtu3, TYPE_RENESAS_MTU3);
+    mtu3 = SYS_BUS_DEVICE(&s->mtu3);
+    qdev_prop_set_uint64(DEVICE(mtu3), "input-freq", s->pclk_freq_hz);
+    sysbus_realize(mtu3, &error_abort);
+
+    for (i = 0; i < MTU3_NR_IRQ; i++) {
+        sysbus_connect_irq(mtu3, i,
+                           qdev_get_gpio_in(DEVICE(&s->icu),
+                                            RX65N_MTU3_IRQ + i));
+    }
+    sysbus_mmio_map(mtu3, 0, RX65N_MTU3_BASE);
+}
+
+static void register_s12ad(RX65NState *s)
+{
+    SysBusDevice *s12ad;
+    int i;
+
+    object_initialize_child(OBJECT(s), "s12ad", &s->s12ad, TYPE_RENESAS_S12AD);
+    s12ad = SYS_BUS_DEVICE(&s->s12ad);
+    qdev_prop_set_uint64(DEVICE(s12ad), "input-freq", s->pclk_freq_hz);
+    sysbus_realize(s12ad, &error_abort);
+
+    for (i = 0; i < S12AD_NR_IRQ; i++) {
+        sysbus_connect_irq(s12ad, i,
+                           qdev_get_gpio_in(DEVICE(&s->icu),
+                                            RX65N_S12AD_IRQ + i));
+    }
+    sysbus_mmio_map(s12ad, 0, RX65N_S12AD_BASE);
+}
+
+static void register_rspi(RX65NState *s)
+{
+    SysBusDevice *rspi;
+    int i;
+
+    object_initialize_child(OBJECT(s), "rspi", &s->rspi, TYPE_RENESAS_RSPI);
+    rspi = SYS_BUS_DEVICE(&s->rspi);
+    qdev_prop_set_uint64(DEVICE(rspi), "input-freq", s->pclk_freq_hz);
+    sysbus_realize(rspi, &error_abort);
+
+    for (i = 0; i < RSPI_NR_IRQ; i++) {
+        sysbus_connect_irq(rspi, i,
+                           qdev_get_gpio_in(DEVICE(&s->icu),
+                                            RX65N_RSPI0_IRQ + i));
+    }
+    sysbus_mmio_map(rspi, 0, RX65N_RSPI0_BASE);
+}
+
 static void rx65n_realize(DeviceState *dev, Error **errp)
 {
     RX65NState *s = RX65N_MCU(dev);
@@ -247,10 +304,7 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("rx65n.usb",    0x000A0000, 0x10000);
     create_unimplemented_device("rx65n.rscan",  0x000A8000, 0x10000);
     create_unimplemented_device("rx65n.etherc", 0x000C0000, 0x10000);
-    create_unimplemented_device("rx65n.mtu3",   0x000C1200, 0x01000);
     create_unimplemented_device("rx65n.gpt",    0x000C2000, 0x01000);
-    create_unimplemented_device("rx65n.s12ad",  0x00089000, 0x00800);
-    create_unimplemented_device("rx65n.rspi",   0x000D0100, 0x00100);
 
     /* Initialize CPU */
     object_initialize_child(OBJECT(s), "cpu", &s->cpu, TYPE_RX65N_CPU);
@@ -263,6 +317,9 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_cmt(s, 0);
     register_cmt(s, 1);
     register_sci(s, 0);
+    register_mtu3(s);
+    register_s12ad(s);
+    register_rspi(s);
 }
 
 static const Property rx65n_properties[] = {
