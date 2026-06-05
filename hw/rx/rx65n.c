@@ -40,6 +40,10 @@
 #define RX65N_TMR_IRQ   174
 #define RX65N_CMT_IRQ   28
 #define RX65N_SCI_IRQ   214
+/* SCI4 (serial console) vectors: RXI4=82, TXI4=83, ERI4/TEI4 = GROUPBL0 (110) */
+#define RX65N_SCI4_RXI  82
+#define RX65N_SCI4_TXI  83
+#define RX65N_GROUPBL0  110
 #define RX65N_MTU3_IRQ  156   /* TGIA3; ch3: 156-160, ch4: 161-165 */
 #define RX65N_S12AD_IRQ 98    /* S12ADI0=98, GBADI0=99 */
 #define RX65N_RSPI0_IRQ 44    /* SPEI0=44, SPRI0=45, SPTI0=46, SPII0=47 */
@@ -190,21 +194,28 @@ static void register_cmt(RX65NState *s, int unit)
 static void register_sci(RX65NState *s, int unit)
 {
     SysBusDevice *sci;
-    int i, irqbase;
 
     object_initialize_child(OBJECT(s), "sci[*]",
                             &s->sci[unit], TYPE_RENESAS_SCI);
     sci = SYS_BUS_DEVICE(&s->sci[unit]);
-    qdev_prop_set_chr(DEVICE(sci), "chardev", serial_hd(unit));
+    qdev_prop_set_chr(DEVICE(sci), "chardev", serial_hd(0));
     qdev_prop_set_uint64(DEVICE(sci), "input-freq", s->pclk_freq_hz);
     sysbus_realize(sci, &error_abort);
 
-    irqbase = RX65N_SCI_IRQ + SCI_NR_IRQ * unit;
-    for (i = 0; i < SCI_NR_IRQ; i++) {
-        sysbus_connect_irq(sci, i,
-                           qdev_get_gpio_in(DEVICE(&s->icu), irqbase + i));
-    }
-    sysbus_mmio_map(sci, 0, RX65N_SCI_BASE + unit * 0x08);
+    /*
+     * The firmware serial console is wired to SCI channel 4.
+     * RXI4/TXI4 have individual vectors; ERI4/TEI4 are sourced through
+     * the GROUPBL0 group interrupt.
+     */
+    sysbus_connect_irq(sci, ERI,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
+    sysbus_connect_irq(sci, RXI,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_RXI));
+    sysbus_connect_irq(sci, TXI,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_TXI));
+    sysbus_connect_irq(sci, TEI,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
+    sysbus_mmio_map(sci, 0, RX65N_SCI4_BASE);
 }
 
 static void register_mtu3(RX65NState *s)
@@ -274,6 +285,17 @@ static void register_etherc(RX65NState *s)
     sysbus_mmio_map(etherc, 0, RX65N_ETHERC_BASE);
 }
 
+static void register_sysclk(RX65NState *s)
+{
+    SysBusDevice *sysclk;
+
+    object_initialize_child(OBJECT(s), "sysclk", &s->sysclk,
+                            TYPE_RX65N_SYSCLK);
+    sysclk = SYS_BUS_DEVICE(&s->sysclk);
+    sysbus_realize(sysclk, &error_abort);
+    sysbus_mmio_map(sysclk, 0, RX65N_SYSTEM_BASE);
+}
+
 static void rx65n_realize(DeviceState *dev, Error **errp)
 {
     RX65NState *s = RX65N_MCU(dev);
@@ -303,8 +325,19 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     s->cflash_base = (uint32_t)(0x100000000ULL - rxc->rom_flash_size);
 
     memory_region_init_ram(&s->iram, OBJECT(dev), "iram",
-                           rxc->ram_size, &error_abort);
+                           MIN(rxc->ram_size, RX65N_SRAM_MAX), &error_abort);
     memory_region_add_subregion(s->sysmem, RX65N_IRAM_BASE, &s->iram);
+
+    /*
+     * Primary SRAM ends at 0x00080000 where the peripheral I/O space begins.
+     * Any SRAM beyond 512 KB lives in the separate expansion region so it does
+     * not shadow the on-chip peripheral registers.
+     */
+    if (rxc->ram_size > RX65N_SRAM_MAX) {
+        memory_region_init_ram(&s->exram, OBJECT(dev), "exram",
+                               rxc->ram_size - RX65N_SRAM_MAX, &error_abort);
+        memory_region_add_subregion(s->sysmem, RX65N_EXRAM_BASE, &s->exram);
+    }
 
     memory_region_init_rom(&s->d_flash, OBJECT(dev), "flash-data",
                            rxc->data_flash_size, &error_abort);
@@ -325,6 +358,7 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
 
     register_icu(s);
     s->cpu.env.ack = qdev_get_gpio_in_named(DEVICE(&s->icu), "ack", 0);
+    register_sysclk(s);
     register_tmr(s, 0);
     register_tmr(s, 1);
     register_cmt(s, 0);

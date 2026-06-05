@@ -33,6 +33,7 @@
 #include "hw/adc/renesas_s12ad.h"
 #include "hw/ssi/renesas_rspi.h"
 #include "hw/net/renesas_etherc.h"
+#include "hw/misc/rx65n_sysclk.h"
 #include "qom/object.h"
 
 #define TYPE_RX65N_MCU      "rx65n-mcu"
@@ -50,6 +51,14 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 
 /* On-chip memory base addresses (HW manual section 5) */
 #define RX65N_IRAM_BASE     0x00000000
+/*
+ * The primary on-chip SRAM starts at 0x00000000 and is at most 512 KB; the
+ * peripheral I/O register space begins right after it at 0x00080000. Devices
+ * with more than 512 KB of SRAM (e.g. the 640 KB part) place the remainder in
+ * a separate expansion SRAM region at 0x00800000.
+ */
+#define RX65N_SRAM_MAX      (512 * 1024)
+#define RX65N_EXRAM_BASE    0x00800000
 #define RX65N_DFLASH_BASE   0x00100000
 /*
  * Code flash base depends on variant flash size; it always ends at
@@ -61,10 +70,14 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_CFLASH_BASE_2M    0xFFE00000
 
 /* Peripheral base addresses (HW manual section 5) */
+#define RX65N_SYSTEM_BASE   0x00080000
 #define RX65N_ICU_BASE      0x00087000
 #define RX65N_TMR_BASE      0x00088200
 #define RX65N_CMT_BASE      0x00088000
-#define RX65N_SCI_BASE      0x00088240
+/* SCIg/SCIh channels: SCI0 @ 0x8A000, 0x20 spacing (HW manual section 5) */
+#define RX65N_SCI_BASE      0x0008A000
+#define RX65N_SCI_SPACING   0x20
+#define RX65N_SCI4_BASE     (RX65N_SCI_BASE + 4 * RX65N_SCI_SPACING)
 #define RX65N_MTU3_BASE     0x000C1200
 #define RX65N_S12AD_BASE    0x00089000
 #define RX65N_RSPI0_BASE    0x000D0100
@@ -89,11 +102,13 @@ struct RX65NState {
     RX65NS12ADState s12ad;
     RX65NRSPIState rspi;
     RX65NEthercState etherc;
+    RX65NSysClkState sysclk;
 
     MemoryRegion *sysmem;
     bool kernel;
 
     MemoryRegion iram;
+    MemoryRegion exram;
     MemoryRegion d_flash;
     MemoryRegion c_flash;
 
