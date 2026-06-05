@@ -172,6 +172,9 @@ config AUX
 config UNIMP
     bool
 
+config RX65N_SYSCLK
+    bool
+
 config LED
     bool
 

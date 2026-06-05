@@ -25,6 +25,7 @@
 #include "qemu/guest-random.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "elf.h"
 #include "hw/loader.h"
 #include "hw/rx/rx65n.h"
 #include "system/qtest.h"
@@ -60,9 +61,24 @@ static void rx_load_image(RXCPU *cpu, const char *filename,
                           uint32_t start, uint32_t size)
 {
     static uint32_t extable[32];
+    uint64_t entry;
     long kernel_size;
     int i;
 
+    /*
+     * A bare-metal RX firmware is an ELF whose segments carry their own load
+     * addresses (code flash plus the fixed vector table at 0xffffff80). Load
+     * those segments to their physical addresses; the CPU reset then fetches
+     * the reset vector from flash and PC is set up automatically.
+     */
+    kernel_size = load_elf(filename, NULL, NULL, NULL, &entry,
+                           NULL, NULL, NULL, ELFDATA2LSB, EM_RX, 0, 0);
+    if (kernel_size > 0) {
+        cpu->env.pc = entry;
+        return;
+    }
+
+    /* Otherwise treat it as a raw binary image (e.g. a Linux kernel). */
     kernel_size = load_image_targphys(filename, start, size);
     if (kernel_size < 0) {
         fprintf(stderr, "qemu: could not load kernel '%s'\n", filename);

@@ -22,6 +22,7 @@ config RX65N_MCU
     select RENESAS_S12AD
     select RENESAS_RSPI
     select RENESAS_ETHERC
+    select RX65N_SYSCLK
     select UNIMP
 
 config RX65N_EVK

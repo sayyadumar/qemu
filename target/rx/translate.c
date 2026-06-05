@@ -1881,6 +1881,7 @@ static bool trans_FCMP_mr(DisasContext *ctx, arg_FCMP_mr *a)
 }
 
 FCONVOP(FTOI, ftoi)
+FCONVOP(FTOU, ftou)
 FCONVOP(ROUND, round)
 
 /* itof rs, rd */
@@ -1891,6 +1892,16 @@ static bool trans_ITOF(DisasContext *ctx, arg_ITOF * a)
     mem = tcg_temp_new();
     val = rx_load_source(ctx, mem, a->ld, a->mi, a->rs);
     gen_helper_itof(cpu_regs[a->rd], tcg_env, val);
+    return true;
+}
+
+/* utof dsp[rs], rd  (RXv2) */
+static bool trans_UTOF(DisasContext *ctx, arg_UTOF * a)
+{
+    TCGv val, mem;
+    mem = tcg_temp_new();
+    val = rx_load_source(ctx, mem, a->ld, a->mi, a->rs);
+    gen_helper_utof(cpu_regs[a->rd], tcg_env, val);
     return true;
 }
 
