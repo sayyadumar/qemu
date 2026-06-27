@@ -30,3 +30,9 @@ config SIFIVE_PDMA
 config XLNX_CSU_DMA
     bool
     select REGISTER
+
+config RENESAS_RX_DMAC
+    bool
+
+config RENESAS_RX_DTC
+    bool

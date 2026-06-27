@@ -23,6 +23,13 @@ config RX65N_MCU
     select RENESAS_RSPI
     select RENESAS_ETHERC
     select RX65N_SYSCLK
+    select RENESAS_RX_FCU
+    select RENESAS_RX_GPIO
+    select RENESAS_RX_DMAC
+    select RENESAS_RX_DTC
+    select RENESAS_RX_WDT
+    select RENESAS_RX_RTC
+    select LED
     select UNIMP
 
 config RX65N_EVK
@@ -31,3 +38,4 @@ config RX65N_EVK
     depends on RX && FDT
     select DEVICE_TREE
     select RX65N_MCU
+    select SPLIT_IRQ

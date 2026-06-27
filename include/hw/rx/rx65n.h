@@ -34,6 +34,12 @@
 #include "hw/ssi/renesas_rspi.h"
 #include "hw/net/renesas_etherc.h"
 #include "hw/misc/rx65n_sysclk.h"
+#include "hw/misc/renesas_rx_fcu.h"
+#include "hw/gpio/renesas_rx_gpio.h"
+#include "hw/dma/renesas_rx_dmac.h"
+#include "hw/dma/renesas_rx_dtc.h"
+#include "hw/watchdog/renesas_rx_wdt.h"
+#include "hw/rtc/renesas_rx_rtc.h"
 #include "qom/object.h"
 
 #define TYPE_RX65N_MCU      "rx65n-mcu"
@@ -82,6 +88,21 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_S12AD_BASE    0x00089000
 #define RX65N_RSPI0_BASE    0x000D0100
 #define RX65N_ETHERC_BASE   0x000C0000
+/* Flash Control Unit FACI register block (HW manual section 6) */
+#define RX65N_FCU_BASE      0x007FE000
+/* I/O ports (PORTn) and Multi-Function Pin Controller (MPC) */
+#define RX65N_GPIO_BASE     0x0008C000
+#define RX65N_MPC_BASE      0x0008C100
+/* DMA controller and Data Transfer Controller */
+#define RX65N_DMAC_BASE     0x00082000
+#define RX65N_DTC_BASE      0x00082400
+/* Watchdog timers (WDT + IWDT) */
+#define RX65N_WDT_BASE      0x00088020
+/* Realtime clock */
+#define RX65N_RTC_BASE      0x0008C400
+
+/* DMAC channel 0 interrupt vector base (DMAC0I = 120 .. DMAC3I; rest GROUPs) */
+#define RX65N_DMAC_IRQ      120
 
 /* Phase 1: minimal peripheral counts (extend in later phases) */
 #define RX65N_NR_TMR    2
@@ -103,14 +124,18 @@ struct RX65NState {
     RX65NRSPIState rspi;
     RX65NEthercState etherc;
     RX65NSysClkState sysclk;
+    RenesasRxFcuState fcu;
+    RenesasRxGpioState gpio;
+    RenesasRxDmacState dmac;
+    RenesasRxDtcState dtc;
+    RenesasRxWdtState wdt;
+    RenesasRxRtcState rtc;
 
     MemoryRegion *sysmem;
     bool kernel;
 
     MemoryRegion iram;
     MemoryRegion exram;
-    MemoryRegion d_flash;
-    MemoryRegion c_flash;
 
     /* Populated during realize; board uses this for firmware loading */
     uint32_t cflash_base;

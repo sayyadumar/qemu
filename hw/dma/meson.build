@@ -12,3 +12,6 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_dma.c', 'soc_dma.c'))
 system_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_dma.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_PDMA', if_true: files('sifive_pdma.c'))
 system_ss.add(when: 'CONFIG_XLNX_CSU_DMA', if_true: files('xlnx_csu_dma.c'))
+
+system_ss.add(when: 'CONFIG_RENESAS_RX_DMAC', if_true: files('renesas_rx_dmac.c'))
+system_ss.add(when: 'CONFIG_RENESAS_RX_DTC', if_true: files('renesas_rx_dtc.c'))

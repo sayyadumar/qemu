@@ -175,6 +175,9 @@ config UNIMP
 config RX65N_SYSCLK
     bool
 
+config RENESAS_RX_FCU
+    bool
+
 config LED
     bool
 

@@ -27,6 +27,9 @@
 #include "qapi/error.h"
 #include "elf.h"
 #include "hw/loader.h"
+#include "hw/core/split-irq.h"
+#include "hw/misc/led.h"
+#include "hw/qdev-properties.h"
 #include "hw/rx/rx65n.h"
 #include "system/qtest.h"
 #include "system/device_tree.h"
@@ -43,14 +46,48 @@ struct RX65NEvkMachineClass {
     const char *mcu_name;
     uint32_t    xtal_freq_hz;
     uint32_t    cflash_base;
+    bool        board_leds;     /* wire RSK on-board user LEDs to GPIO */
+};
+
+/*
+ * RSK RX65N-2MB on-board user LED pin assignments (port * 8 + bit).
+ * Per the Renesas Starter Kit+ schematic the four user LEDs sit on PORT0;
+ * adjust here if targeting a different board revision.
+ */
+#define RSK_NR_LEDS         4
+static const int rsk_led_pins[RSK_NR_LEDS] = {
+    0x00 * 8 + 3,   /* LED0 = P03 */
+    0x00 * 8 + 5,   /* LED1 = P05 */
+    0x02 * 8 + 7,   /* LED2 = P27 */
+    0x03 * 8 + 0,   /* LED3 = P30 */
 };
 typedef struct RX65NEvkMachineClass RX65NEvkMachineClass;
+
+/*
+ * RSK RX65N-2MB user switches. Each switch is wired to both a port input pin
+ * (readable via PIDR) and an external IRQ pin at the ICU; asserting the line
+ * presses the switch. The external IRQ vector for IRQn is 64 + n.
+ * Pin/IRQ choices follow the Starter Kit+ schematic (best effort).
+ */
+#define RSK_NR_SWITCHES     3
+#define RX65N_IRQ0_VECTOR   64
+static const struct {
+    int pin;        /* GPIO port * 8 + bit */
+    int irqn;       /* external IRQ number */
+} rsk_switches[RSK_NR_SWITCHES] = {
+    { 0x00 * 8 + 0,  8 },   /* SW1 = P00 / IRQ8  */
+    { 0x00 * 8 + 1,  9 },   /* SW2 = P01 / IRQ9  */
+    { 0x00 * 8 + 2, 10 },   /* SW3 = P02 / IRQ10 */
+};
 
 struct RX65NEvkMachineState {
     /*< private >*/
     MachineState parent_obj;
     /*< public >*/
     RX65NState mcu;
+
+    /* Board-level switch source lines (fan out to GPIO input + ICU IRQ). */
+    qemu_irq switch_in[RSK_NR_SWITCHES];
 };
 typedef struct RX65NEvkMachineState RX65NEvkMachineState;
 
@@ -130,6 +167,42 @@ static void rx65n_evk_init(MachineState *machine)
 
     qdev_realize(DEVICE(&s->mcu), NULL, &error_abort);
 
+    /* Wire the RSK on-board user LEDs to the MCU GPIO output lines. */
+    if (rxc->board_leds) {
+        DeviceState *gpio = DEVICE(&s->mcu.gpio);
+        int i;
+
+        for (i = 0; i < RSK_NR_LEDS; i++) {
+            g_autofree char *name = g_strdup_printf("rsk-led%d", i);
+            DeviceState *led = DEVICE(led_create_simple(OBJECT(machine),
+                                                        GPIO_POLARITY_ACTIVE_HIGH,
+                                                        LED_COLOR_GREEN, name));
+            qdev_connect_gpio_out_named(gpio, "gpio-out", rsk_led_pins[i],
+                                        qdev_get_gpio_in(led, 0));
+        }
+
+        /*
+         * Each user switch drives both a port input pin (PIDR) and an ICU
+         * external IRQ line; a split-irq device fans the single board-level
+         * source out to both. The split input is retained so a press can be
+         * injected (e.g. from qtest) onto the switch line.
+         */
+        for (i = 0; i < RSK_NR_SWITCHES; i++) {
+            DeviceState *split = qdev_new(TYPE_SPLIT_IRQ);
+
+            qdev_prop_set_uint32(split, "num-lines", 2);
+            qdev_realize_and_unref(split, NULL, &error_abort);
+            qdev_connect_gpio_out(split, 0,
+                                  qdev_get_gpio_in_named(gpio, "gpio-in",
+                                                         rsk_switches[i].pin));
+            qdev_connect_gpio_out(split, 1,
+                                  qdev_get_gpio_in(DEVICE(&s->mcu.icu),
+                                                   RX65N_IRQ0_VECTOR +
+                                                   rsk_switches[i].irqn));
+            s->switch_in[i] = qdev_get_gpio_in(split, 0);
+        }
+    }
+
     /* Load kernel and optional device tree */
     if (kernel_filename) {
         ram_addr_t kernel_offset;
@@ -200,6 +273,19 @@ static void rx65nh_evk_class_init(ObjectClass *oc, const void *data)
     mc->desc          = "Renesas RX65N EVK (R5F565NH, 2 MB flash, 640 KB RAM)";
 }
 
+static void rsk_rx65n_2mb_class_init(ObjectClass *oc, const void *data)
+{
+    RX65NEvkMachineClass *rxc = RX65N_EVK_MACHINE_CLASS(oc);
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    /* Renesas Starter Kit+ for RX65N-2MB: R5F565NEH, 24 MHz crystal. */
+    rxc->mcu_name     = TYPE_R5F565NH_MCU;
+    rxc->xtal_freq_hz = 24 * 1000 * 1000;
+    rxc->cflash_base  = RX65N_CFLASH_BASE_2M;
+    rxc->board_leds   = true;
+    mc->desc          = "Renesas Starter Kit+ for RX65N-2MB (R5F565NEH)";
+}
+
 static const TypeInfo rx65n_evk_types[] = {
     {
         .name       = MACHINE_TYPE_NAME("rx65n-r5f565ne-evk"),
@@ -209,6 +295,10 @@ static const TypeInfo rx65n_evk_types[] = {
         .name       = MACHINE_TYPE_NAME("rx65n-r5f565nh-evk"),
         .parent     = TYPE_RX65N_EVK_MACHINE,
         .class_init = rx65nh_evk_class_init,
+    }, {
+        .name       = MACHINE_TYPE_NAME("rsk-rx65n-2mb"),
+        .parent     = TYPE_RX65N_EVK_MACHINE,
+        .class_init = rsk_rx65n_2mb_class_init,
     }, {
         .name          = TYPE_RX65N_EVK_MACHINE,
         .parent        = TYPE_MACHINE,

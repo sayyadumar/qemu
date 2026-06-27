@@ -28,6 +28,7 @@
 #include "hw/sysbus.h"
 #include "hw/qdev-properties.h"
 #include "hw/misc/unimp.h"
+#include "net/net.h"
 #include "system/system.h"
 #include "qobject/qlist.h"
 #include "qom/object.h"
@@ -48,6 +49,8 @@
 #define RX65N_S12AD_IRQ 98    /* S12ADI0=98, GBADI0=99 */
 #define RX65N_RSPI0_IRQ 44    /* SPEI0=44, SPRI0=45, SPTI0=46, SPII0=47 */
 #define RX65N_ETHERC_IRQ 32   /* EINT0 (level-triggered) */
+#define RX65N_FCU_FIFERR 21   /* Flash access error (level-triggered) */
+#define RX65N_FCU_FRDYI  23   /* Flash ready */
 
 #define RX65N_XTAL_MIN_HZ  (8  * 1000 * 1000)
 #define RX65N_XTAL_MAX_HZ  (24 * 1000 * 1000)
@@ -278,6 +281,8 @@ static void register_etherc(RX65NState *s)
 
     object_initialize_child(OBJECT(s), "etherc", &s->etherc, TYPE_RENESAS_ETHERC);
     etherc = SYS_BUS_DEVICE(&s->etherc);
+    /* Bind to a -nic/-netdev backend (default network) if one is present. */
+    qemu_configure_nic_device(DEVICE(&s->etherc), true, NULL);
     sysbus_realize(etherc, &error_abort);
 
     sysbus_connect_irq(etherc, 0,
@@ -296,6 +301,90 @@ static void register_sysclk(RX65NState *s)
     sysbus_mmio_map(sysclk, 0, RX65N_SYSTEM_BASE);
 }
 
+static void register_fcu(RX65NState *s, RX65NClass *rxc)
+{
+    SysBusDevice *fcu;
+
+    object_initialize_child(OBJECT(s), "fcu", &s->fcu, TYPE_RENESAS_RX_FCU);
+    fcu = SYS_BUS_DEVICE(&s->fcu);
+    qdev_prop_set_uint32(DEVICE(fcu), "code-flash-size", rxc->rom_flash_size);
+    qdev_prop_set_uint32(DEVICE(fcu), "data-flash-size", rxc->data_flash_size);
+    qdev_prop_set_uint32(DEVICE(fcu), "code-flash-base", s->cflash_base);
+    qdev_prop_set_uint32(DEVICE(fcu), "data-flash-base", RX65N_DFLASH_BASE);
+    sysbus_realize(fcu, &error_abort);
+
+    /* Region 0: FACI registers; region 1: code flash; region 2: data flash. */
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_REGS, RX65N_FCU_BASE);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_CFLASH, s->cflash_base);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_DFLASH, RX65N_DFLASH_BASE);
+
+    sysbus_connect_irq(fcu, RX_FCU_IRQ_FRDYI,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_FCU_FRDYI));
+    sysbus_connect_irq(fcu, RX_FCU_IRQ_FIFERR,
+                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_FCU_FIFERR));
+}
+
+static void register_gpio(RX65NState *s)
+{
+    SysBusDevice *gpio;
+
+    object_initialize_child(OBJECT(s), "gpio", &s->gpio, TYPE_RENESAS_RX_GPIO);
+    gpio = SYS_BUS_DEVICE(&s->gpio);
+    sysbus_realize(gpio, &error_abort);
+    sysbus_mmio_map(gpio, RX_GPIO_MMIO_PORT, RX65N_GPIO_BASE);
+    sysbus_mmio_map(gpio, RX_GPIO_MMIO_MPC, RX65N_MPC_BASE);
+}
+
+static void register_dmac(RX65NState *s)
+{
+    SysBusDevice *dmac;
+    int i;
+
+    object_initialize_child(OBJECT(s), "dmac", &s->dmac, TYPE_RENESAS_RX_DMAC);
+    dmac = SYS_BUS_DEVICE(&s->dmac);
+    object_property_set_link(OBJECT(&s->dmac), "dma-memory",
+                             OBJECT(s->sysmem), &error_abort);
+    sysbus_realize(dmac, &error_abort);
+    sysbus_mmio_map(dmac, 0, RX65N_DMAC_BASE);
+
+    /* Channels 0-3 have dedicated vectors; 4-7 are routed via group IRQs. */
+    for (i = 0; i < 4; i++) {
+        sysbus_connect_irq(dmac, i,
+                           qdev_get_gpio_in(DEVICE(&s->icu),
+                                            RX65N_DMAC_IRQ + i));
+    }
+}
+
+static void register_dtc(RX65NState *s)
+{
+    SysBusDevice *dtc;
+
+    object_initialize_child(OBJECT(s), "dtc", &s->dtc, TYPE_RENESAS_RX_DTC);
+    dtc = SYS_BUS_DEVICE(&s->dtc);
+    sysbus_realize(dtc, &error_abort);
+    sysbus_mmio_map(dtc, 0, RX65N_DTC_BASE);
+}
+
+static void register_wdt(RX65NState *s)
+{
+    SysBusDevice *wdt;
+
+    object_initialize_child(OBJECT(s), "wdt", &s->wdt, TYPE_RENESAS_RX_WDT);
+    wdt = SYS_BUS_DEVICE(&s->wdt);
+    sysbus_realize(wdt, &error_abort);
+    sysbus_mmio_map(wdt, 0, RX65N_WDT_BASE);
+}
+
+static void register_rtc(RX65NState *s)
+{
+    SysBusDevice *rtc;
+
+    object_initialize_child(OBJECT(s), "rtc", &s->rtc, TYPE_RENESAS_RX_RTC);
+    rtc = SYS_BUS_DEVICE(&s->rtc);
+    sysbus_realize(rtc, &error_abort);
+    sysbus_mmio_map(rtc, 0, RX65N_RTC_BASE);
+}
+
 static void rx65n_realize(DeviceState *dev, Error **errp)
 {
     RX65NState *s = RX65N_MCU(dev);
@@ -312,11 +401,12 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
         return;
     }
     /*
-     * Simplified clock model: use a fixed 4x multiplier.
-     * Real hardware uses a PLL with configurable ratios up to 120 MHz ICLK.
+     * Simplified clock model: a fixed 4x multiplier, capped at the maximum
+     * peripheral clock. Real hardware runs the PLL up to 240 MHz and divides
+     * down to a <=60 MHz PCLKB; the cap yields the correct 60 MHz PCLKB for
+     * faster crystals (e.g. the RSK's 24 MHz part) instead of overshooting.
      */
-    s->pclk_freq_hz = 4 * s->xtal_freq_hz;
-    assert(s->pclk_freq_hz <= RX65N_PCLK_MAX_HZ);
+    s->pclk_freq_hz = MIN(4 * s->xtal_freq_hz, RX65N_PCLK_MAX_HZ);
 
     /*
      * Code flash base depends on flash size: it always ends at 0xFFFFFFFF,
@@ -339,14 +429,6 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
         memory_region_add_subregion(s->sysmem, RX65N_EXRAM_BASE, &s->exram);
     }
 
-    memory_region_init_rom(&s->d_flash, OBJECT(dev), "flash-data",
-                           rxc->data_flash_size, &error_abort);
-    memory_region_add_subregion(s->sysmem, RX65N_DFLASH_BASE, &s->d_flash);
-
-    memory_region_init_rom(&s->c_flash, OBJECT(dev), "flash-code",
-                           rxc->rom_flash_size, &error_abort);
-    memory_region_add_subregion(s->sysmem, s->cflash_base, &s->c_flash);
-
     /* Stub out unimplemented peripheral regions so accesses log warnings */
     create_unimplemented_device("rx65n.usb",    0x000A0000, 0x10000);
     create_unimplemented_device("rx65n.rscan",  0x000A8000, 0x10000);
@@ -359,6 +441,12 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_icu(s);
     s->cpu.env.ack = qdev_get_gpio_in_named(DEVICE(&s->icu), "ack", 0);
     register_sysclk(s);
+    register_fcu(s, rxc);
+    register_gpio(s);
+    register_dmac(s);
+    register_dtc(s);
+    register_wdt(s);
+    register_rtc(s);
     register_tmr(s, 0);
     register_tmr(s, 1);
     register_cmt(s, 0);
