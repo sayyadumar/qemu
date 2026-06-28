@@ -279,11 +279,17 @@ static const TypeInfo rx65n_rx_cpu_info = {
     .parent = TYPE_RX_CPU,
 };
 
+static const TypeInfo rx72m_rx_cpu_info = {
+    .name = TYPE_RX72M_CPU,
+    .parent = TYPE_RX_CPU,
+};
+
 static void rx_cpu_register_types(void)
 {
     type_register_static(&rx_cpu_info);
     type_register_static(&rx62n_rx_cpu_info);
     type_register_static(&rx65n_rx_cpu_info);
+    type_register_static(&rx72m_rx_cpu_info);
 }
 
 type_init(rx_cpu_register_types)

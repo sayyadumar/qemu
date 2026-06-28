@@ -39,3 +39,31 @@ config RX65N_EVK
     select DEVICE_TREE
     select RX65N_MCU
     select SPLIT_IRQ
+
+config RX72M_MCU
+    bool
+    select RX_ICU
+    select RENESAS_TMR
+    select RENESAS_CMT
+    select RENESAS_SCI
+    select RENESAS_MTU3
+    select RENESAS_ADS1263
+    select RENESAS_S12AD
+    select RENESAS_RSPI
+    select RENESAS_ETHERC
+    select RX65N_SYSCLK
+    select RENESAS_RX_FCU
+    select RENESAS_RX_GPIO
+    select RENESAS_RX_DMAC
+    select RENESAS_RX_DTC
+    select RENESAS_RX_WDT
+    select RENESAS_RX_RTC
+    select LED
+    select UNIMP
+
+config RX72M_RSK
+    bool
+    default y
+    depends on RX
+    select RX72M_MCU
+    select SPLIT_IRQ

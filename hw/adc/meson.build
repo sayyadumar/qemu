@@ -1,3 +1,4 @@
+system_ss.add(when: 'CONFIG_RENESAS_ADS1263', if_true: files('renesas_ads1263.c'))
 system_ss.add(when: 'CONFIG_STM32F2XX_ADC', if_true: files('stm32f2xx_adc.c'))
 system_ss.add(when: 'CONFIG_RENESAS_S12AD', if_true: files('renesas_s12ad.c'))
 system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_adc.c'))

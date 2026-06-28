@@ -44,7 +44,8 @@ void rx_cpu_unpack_psw(CPURXState *env, uint32_t psw, int rte)
 void rx_cpu_do_interrupt(CPUState *cs)
 {
     CPURXState *env = cpu_env(cs);
-    int do_irq = cpu_test_interrupt(cs, INT_FLAGS);
+    bool fir = cpu_test_interrupt(cs, CPU_INTERRUPT_FIR);
+    bool hard = cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
     uint32_t save_psw;
 
     env->in_sleep = 0;
@@ -57,8 +58,8 @@ void rx_cpu_do_interrupt(CPUState *cs)
     save_psw = rx_cpu_pack_psw(env);
     env->psw_pm = env->psw_i = env->psw_u = 0;
 
-    if (do_irq) {
-        if (do_irq & CPU_INTERRUPT_FIR) {
+    if (fir || hard) {
+        if (fir) {
             env->bpc = env->pc;
             env->bpsw = save_psw;
             env->pc = env->fintv;
@@ -66,7 +67,7 @@ void rx_cpu_do_interrupt(CPUState *cs)
             cpu_reset_interrupt(cs, CPU_INTERRUPT_FIR);
             qemu_set_irq(env->ack, env->ack_irq);
             qemu_log_mask(CPU_LOG_INT, "fast interrupt raised\n");
-        } else if (do_irq & CPU_INTERRUPT_HARD) {
+        } else {
             env->isp -= 4;
             cpu_stl_data(env, env->isp, save_psw);
             env->isp -= 4;

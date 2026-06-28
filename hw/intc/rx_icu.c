@@ -169,6 +169,31 @@ static void rxicu_ack_irq(void *opaque, int no, int level)
     }
 }
 
+/*
+ * Re-evaluate pending interrupt requests. The hardware continuously compares
+ * every set IR flag against its enable (IER) and priority (IPR); a request that
+ * was latched while disabled must be delivered once it is later enabled. Pick
+ * the highest-priority pending-and-enabled source and raise it.
+ */
+static void rxicu_reeval(RXICUState *icu)
+{
+    int i, n_IRQ = -1, max_pri = 0;
+
+    if (qatomic_read(&icu->req_irq) >= 0) {
+        return;     /* a request is already outstanding */
+    }
+    for (i = 1; i < NR_IRQS; i++) {
+        if (icu->ir[i] && (icu->ier[i / 8] & (1 << (i & 7))) &&
+            max_pri < icu->ipr[icu->map[i]]) {
+            n_IRQ = i;
+            max_pri = icu->ipr[icu->map[i]];
+        }
+    }
+    if (n_IRQ >= 0) {
+        rxicu_request(icu, n_IRQ);
+    }
+}
+
 static uint64_t icu_read(void *opaque, hwaddr addr, unsigned size)
 {
     RXICUState *icu = opaque;
@@ -241,6 +266,7 @@ static void icu_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         break;
     case A_IER ... A_IER + 0x1f:
         icu->ier[reg] = val;
+        rxicu_reeval(icu);
         break;
     case A_SWINTR:
         if (val & R_SWINTR_SWINT_MASK) {
@@ -252,6 +278,7 @@ static void icu_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         break;
     case A_IPR ... A_IPR + 0x8f:
         icu->ipr[reg] = val & R_IPR_IPR_MASK;
+        rxicu_reeval(icu);
         break;
     case A_DMRSR:
     case A_DMRSR + 4:

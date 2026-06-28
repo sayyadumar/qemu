@@ -97,31 +97,49 @@ static void receive(void *opaque, const uint8_t *buf, int size)
     }
 }
 
-static void send_byte(RSCIState *sci)
+/*
+ * The TXI (transmit-data-empty) request is a level condition: it is asserted
+ * whenever the transmitter is enabled (TE), the interrupt is enabled (TIE) and
+ * the transmit data register is empty (TDRE). Driving it as a level (rather
+ * than a one-shot pulse) is required so that re-enabling the interrupt at the
+ * ICU while TDRE is already set re-triggers transmission, which is how the
+ * Renesas SCI FIT driver restarts an interrupt-driven transfer.
+ */
+static void update_txi(RSCIState *sci)
 {
-    if (qemu_chr_fe_backend_connected(&sci->chr)) {
-        qemu_chr_fe_write_all(&sci->chr, &sci->tdr, 1);
-    }
-    timer_mod(&sci->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + sci->trtime);
-    sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 0);
-    sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 1);
-    qemu_set_irq(sci->irq[TEI], 0);
-    if (FIELD_EX8(sci->scr, SCR, TIE)) {
-        qemu_irq_pulse(sci->irq[TXI]);
-    }
+    qemu_set_irq(sci->irq[TXI],
+                 FIELD_EX8(sci->scr, SCR, TE) &&
+                 FIELD_EX8(sci->scr, SCR, TIE) &&
+                 FIELD_EX8(sci->ssr, SSR, TDRE));
 }
 
+/*
+ * The TEI (transmit-end) request is likewise a level condition: it is asserted
+ * whenever the transmit-end interrupt is enabled (TEIE) and transmission has
+ * finished (TEND). The FIT driver, on draining its transmit queue, sets TEIE
+ * from within the TXI handler *after* the final byte has already shifted out
+ * (TEND already 1); driving TEI as a level ensures the request fires in that
+ * case instead of only when TEND transitions inside txend().
+ */
+static void update_tei(RSCIState *sci)
+{
+    qemu_set_irq(sci->irq[TEI],
+                 FIELD_EX8(sci->scr, SCR, TEIE) &&
+                 FIELD_EX8(sci->ssr, SSR, TEND));
+}
+
+/* Bit time elapsed: the byte buffered in TDR has shifted out. */
 static void txend(void *opaque)
 {
     RSCIState *sci = RSCI(opaque);
-    if (!FIELD_EX8(sci->ssr, SSR, TDRE)) {
-        send_byte(sci);
-    } else {
-        sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 1);
-        if (FIELD_EX8(sci->scr, SCR, TEIE)) {
-            qemu_set_irq(sci->irq[TEI], 1);
-        }
+
+    if (qemu_chr_fe_backend_connected(&sci->chr)) {
+        qemu_chr_fe_write_all(&sci->chr, &sci->tdr, 1);
     }
+    sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 1);
+    sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 1);
+    update_txi(sci);
+    update_tei(sci);
 }
 
 static void update_trtime(RSCIState *sci)
@@ -164,24 +182,22 @@ static void sci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         if (FIELD_EX8(sci->scr, SCR, TE)) {
             sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 1);
             sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 1);
-            if (FIELD_EX8(sci->scr, SCR, TIE)) {
-                qemu_irq_pulse(sci->irq[TXI]);
-            }
         }
-        if (!FIELD_EX8(sci->scr, SCR, TEIE)) {
-            qemu_set_irq(sci->irq[TEI], 0);
-        }
+        update_txi(sci);
+        update_tei(sci);
         if (!FIELD_EX8(sci->scr, SCR, RIE)) {
             qemu_set_irq(sci->irq[ERI], 0);
         }
         break;
     case A_TDR:
+        /* Buffer the byte: TDR is now full (TDRE=0) and shifting begins. */
         sci->tdr = val;
-        if (FIELD_EX8(sci->ssr, SSR, TEND)) {
-            send_byte(sci);
-        } else {
-            sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 0);
-        }
+        sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 0);
+        sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 0);
+        qemu_set_irq(sci->irq[TEI], 0);
+        update_txi(sci);
+        timer_mod(&sci->timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + sci->trtime);
         break;
     case A_SSR:
         sci->ssr = FIELD_DP8(sci->ssr, SSR, MPBT,

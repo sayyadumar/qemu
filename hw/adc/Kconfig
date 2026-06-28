@@ -1,5 +1,8 @@
 config STM32F2XX_ADC
     bool
 
+config RENESAS_ADS1263
+    bool
+
 config RENESAS_S12AD
     bool

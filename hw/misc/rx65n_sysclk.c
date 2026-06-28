@@ -45,6 +45,8 @@
 #define OSCOVFSR_SOOVF  (1 << 1)    /* Sub-clock oscillator            */
 #define OSCOVFSR_PLOVF  (1 << 2)    /* PLL                             */
 #define OSCOVFSR_HCOVF  (1 << 3)    /* High-speed on-chip oscillator   */
+#define OSCOVFSR_ILCOVF (1 << 4)    /* IWDT low-speed on-chip osc      */
+#define OSCOVFSR_PPLOVF (1 << 5)    /* PLL2 (RX72M, high-speed periph) */
 
 /*
  * Compute the Oscillation Stabilization Flag Register from the oscillator
@@ -69,6 +71,12 @@ static uint8_t oscovfsr_value(RX65NSysClkState *s)
     if (!(s->regs[R_HOCOCR] & 1)) {
         v |= OSCOVFSR_HCOVF;
     }
+    /*
+     * The IWDT low-speed on-chip oscillator and (on the RX72M) PLL2 have no
+     * stop bit modelled here; report them stabilized so firmware that selects
+     * them does not busy-wait forever. QEMU has no real oscillator timing.
+     */
+    v |= OSCOVFSR_ILCOVF | OSCOVFSR_PPLOVF;
     return v;
 }
 
