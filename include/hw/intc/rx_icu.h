@@ -42,6 +42,25 @@ enum {
     NR_IRQS = 256
 };
 
+/*
+ * Group interrupts: several peripheral edge sources are OR'd together into a
+ * single "group" vector. The firmware's group ISR reads the GRPxx status
+ * register to discover which sub-source(s) fired. GROUPBL0 (vector 110) and
+ * GROUPAL0 (vector 112) are modelled; each has up to 32 sub-sources. SCI
+ * TEI/ERI live here: SCI0-6 in BL0, SCI7 in AL0.
+ *
+ * Sub-sources are driven through the "grp" GPIO input: line = group*32 + bit.
+ */
+enum {
+    RX_ICU_GRP_BL0 = 0,
+    RX_ICU_GRP_AL0 = 1,
+    RX_ICU_NR_GROUPS,
+};
+#define RX_ICU_GROUPBL0_IRQ     110
+#define RX_ICU_GROUPAL0_IRQ     112
+#define RX_ICU_GRP_BITS         32
+#define RX_ICU_NR_GRP_IN        (RX_ICU_NR_GROUPS * RX_ICU_GRP_BITS)
+
 struct RXICUState {
     /*< private >*/
     SysBusDevice parent_obj;
@@ -64,6 +83,8 @@ struct RXICUState {
     uint8_t nmier;
     uint8_t nmiclr;
     uint8_t nmicr;
+    uint32_t grp[RX_ICU_NR_GROUPS];     /* GRPxx request status (live state) */
+    uint32_t gen[RX_ICU_NR_GROUPS];     /* GENxx sub-source enable */
     int16_t req_irq;
     qemu_irq _irq;
     qemu_irq _fir;

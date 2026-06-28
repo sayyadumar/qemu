@@ -60,6 +60,10 @@ REG8(NMICLR, 0x582)
   FIELD(NMICLR, OSTCLR, 2, 1)
 REG8(NMICR, 0x583)
   FIELD(NMICR, NMIMD, 3, 1)
+REG32(GRPBL0, 0x630)
+REG32(GENBL0, 0x650)
+REG32(GRPAL0, 0x830)
+REG32(GENAL0, 0x850)
 
 static void set_irq(RXICUState *icu, int n_IRQ, int req)
 {
@@ -178,9 +182,19 @@ static void rxicu_ack_irq(void *opaque, int no, int level)
 static void rxicu_reeval(RXICUState *icu)
 {
     int i, n_IRQ = -1, max_pri = 0;
+    int cur;
 
-    if (qatomic_read(&icu->req_irq) >= 0) {
-        return;     /* a request is already outstanding */
+    cur = qatomic_read(&icu->req_irq);
+    if (cur >= 0) {
+        /* If the current request was disabled while outstanding (TXI level
+         * stays high after DISABLE_TXI_INT cleared IER), drop it so we can
+         * raise the next pending source (e.g. TEI via GROUPAL0). */
+        if (!(icu->ier[cur / 8] & (1 << (cur & 7)))) {
+            set_irq(icu, cur, 0);
+            qatomic_set(&icu->req_irq, -1);
+        } else {
+            return;     /* a request is already outstanding */
+        }
     }
     for (i = 1; i < NR_IRQS; i++) {
         if (icu->ir[i] && (icu->ier[i / 8] & (1 << (i & 7))) &&
@@ -194,10 +208,54 @@ static void rxicu_reeval(RXICUState *icu)
     }
 }
 
+/* GRPxx status register offset and shared group vector per modelled group. */
+static const struct {
+    hwaddr grp_off;
+    hwaddr gen_off;
+    int vector;
+} rx_icu_groups[RX_ICU_NR_GROUPS] = {
+    [RX_ICU_GRP_BL0] = { A_GRPBL0, A_GENBL0, RX_ICU_GROUPBL0_IRQ },
+    [RX_ICU_GRP_AL0] = { A_GRPAL0, A_GENAL0, RX_ICU_GROUPAL0_IRQ },
+};
+
+/*
+ * A group sub-source (e.g. an SCI's TEI/ERI) changed state. The GPIO line
+ * encodes group*32 + bit. Track the live source level in the GRPxx status
+ * register and drive the shared group vector as a level: it is requested
+ * whenever any sub-source is active. The CPU-visible enable is the group
+ * vector's own IER bit (checked in rxicu_request); the firmware's group ISR
+ * reads GRPxx directly to discover which sub-source fired.
+ */
+static void rxicu_grp_set_irq(void *opaque, int line, int level)
+{
+    RXICUState *icu = opaque;
+    int grp = line / RX_ICU_GRP_BITS;
+    uint32_t mask = 1u << (line % RX_ICU_GRP_BITS);
+
+    if (level) {
+        icu->grp[grp] |= mask;
+    } else {
+        icu->grp[grp] &= ~mask;
+    }
+    rxicu_set_irq(icu, rx_icu_groups[grp].vector, icu->grp[grp] != 0);
+}
+
 static uint64_t icu_read(void *opaque, hwaddr addr, unsigned size)
 {
     RXICUState *icu = opaque;
     int reg = addr & 0xff;
+
+    /* Group request/enable registers are 32-bit accessed. */
+    switch (addr) {
+    case A_GRPBL0:
+        return icu->grp[RX_ICU_GRP_BL0];
+    case A_GRPAL0:
+        return icu->grp[RX_ICU_GRP_AL0];
+    case A_GENBL0:
+        return icu->gen[RX_ICU_GRP_BL0];
+    case A_GENAL0:
+        return icu->gen[RX_ICU_GRP_AL0];
+    }
 
     if ((addr != A_FIR && size != 1) ||
         (addr == A_FIR && size != 2)) {
@@ -246,6 +304,19 @@ static void icu_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     RXICUState *icu = opaque;
     int reg = addr & 0xff;
+
+    /* Group registers are 32-bit accessed. GRPxx are read-only status. */
+    switch (addr) {
+    case A_GRPBL0:
+    case A_GRPAL0:
+        return;
+    case A_GENBL0:
+        icu->gen[RX_ICU_GRP_BL0] = val;
+        return;
+    case A_GENAL0:
+        icu->gen[RX_ICU_GRP_AL0] = val;
+        return;
+    }
 
     if ((addr != A_FIR && size != 1) ||
         (addr == A_FIR && size != 2)) {
@@ -351,10 +422,12 @@ static void rxicu_init(Object *obj)
     RXICUState *icu = RX_ICU(obj);
 
     memory_region_init_io(&icu->memory, OBJECT(icu), &icu_ops,
-                          icu, "rx-icu", 0x600);
+                          icu, "rx-icu", 0x900);
     sysbus_init_mmio(d, &icu->memory);
 
     qdev_init_gpio_in(DEVICE(d), rxicu_set_irq, NR_IRQS);
+    qdev_init_gpio_in_named(DEVICE(d), rxicu_grp_set_irq, "grp",
+                            RX_ICU_NR_GRP_IN);
     qdev_init_gpio_in_named(DEVICE(d), rxicu_ack_irq, "ack", 1);
     sysbus_init_irq(d, &icu->_irq);
     sysbus_init_irq(d, &icu->_fir);

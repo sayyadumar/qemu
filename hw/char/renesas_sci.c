@@ -178,10 +178,14 @@ static void sci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         }
         break;
     case A_SCR:
-        sci->scr = val;
-        if (FIELD_EX8(sci->scr, SCR, TE)) {
-            sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 1);
-            sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 1);
+        {
+            uint8_t old_te = FIELD_EX8(sci->scr, SCR, TE);
+            sci->scr = val;
+            if (!old_te && FIELD_EX8(sci->scr, SCR, TE)) {
+                /* TE first enabled: prime transmitter so TDR appears empty. */
+                sci->ssr = FIELD_DP8(sci->ssr, SSR, TDRE, 1);
+                sci->ssr = FIELD_DP8(sci->ssr, SSR, TEND, 1);
+            }
         }
         update_txi(sci);
         update_tei(sci);

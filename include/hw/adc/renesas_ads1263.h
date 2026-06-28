@@ -38,8 +38,13 @@ enum {
     ADS1263_REG_IDACMUX   = 0x0D,
     ADS1263_REG_IDACMAG   = 0x0E,
     ADS1263_REG_REFMUX    = 0x0F,
-    ADS1263_NUM_REGS      = 16,
+    /* Register file covers 0x00-0x1A; size to the 5-bit RREG/WREG address. */
+    ADS1263_NUM_REGS      = 32,
+    ADS1263_REG_MASK      = ADS1263_NUM_REGS - 1,
 };
+
+/* INTERFACE register: bit 2 (STATUS) prepends a STATUS byte to RDATA1. */
+#define ADS1263_STATUS_ADC1_RDY   (1u << 6)
 
 /* SPI commands */
 enum {

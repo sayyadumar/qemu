@@ -38,6 +38,7 @@
 #include "qom/object.h"
 #include "target/rx/cpu-qom.h"
 #include "chardev/char.h"
+#include "hw/intc/rx_icu.h"
 #include "hw/adc/renesas_ads1263.h"
 
 /* RX72M peripheral IRQ base numbers (shared RX600-series ICUb map). */
@@ -48,13 +49,23 @@
  * RXI7=98, TXI7=99 (verified from the firmware's relocatable vector table);
  * ERI7/TEI7 are sourced via the GROUPBL0 group interrupt.
  */
-#define RX72M_SCI1_RXI  36
-#define RX72M_SCI1_TXI  37
-#define RX72M_SCI1_ERI  38
-#define RX72M_SCI1_TEI  39
+#define RX72M_SCI1_RXI  60
+#define RX72M_SCI1_TXI  61
 #define RX72M_SCI7_RXI  98
 #define RX72M_SCI7_TXI  99
 #define RX72M_GROUPBL0  110
+#define RX72M_GROUPAL0  112
+/*
+ * SCI TEI/ERI are group-interrupt sub-sources, identified by (group, bit) in
+ * the GRPxx status register. SCI0-6 are GROUPBL0 sources at bits (2*ch, 2*ch+1)
+ * (SCI1 -> bits 2/3); SCI7 is a GROUPAL0 source at bits 22/23. The group is
+ * encoded in the ICU "grp" GPIO line as group*32 + bit.
+ */
+#define RX72M_GRP_LINE(grp, bit)    ((grp) * 32 + (bit))
+#define RX72M_SCI1_TEI_GRP  RX72M_GRP_LINE(RX_ICU_GRP_BL0, 2)
+#define RX72M_SCI1_ERI_GRP  RX72M_GRP_LINE(RX_ICU_GRP_BL0, 3)
+#define RX72M_SCI7_TEI_GRP  RX72M_GRP_LINE(RX_ICU_GRP_AL0, 22)
+#define RX72M_SCI7_ERI_GRP  RX72M_GRP_LINE(RX_ICU_GRP_AL0, 23)
 #define RX72M_MTU3_IRQ  156
 #define RX72M_S12AD_IRQ 98
 #define RX72M_RSPI0_IRQ 44
@@ -94,15 +105,19 @@ static const uint8_t ipr_table[NR_IRQS] = {
     0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
     0x10, 0x11, 0x12, 0x13, 0x14, 0x14, 0x14, 0x14, /* 32-47 */
     0x15, 0x15, 0x15, 0x15, 0xff, 0xff, 0xff, 0xff,
-    0x18, 0x18, 0x18, 0x18, 0x18, 0x1d, 0x1e, 0x1f, /* 48-63 */
+    0x18, 0x18, 0x18, 0x18, 0x3c, 0x3d, 0x1e, 0x1f, /* 48-63;
+                                                       SCI1 RXI1=60/IPR3C,
+                                                       TXI1=61/IPR3D */
     0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
-    0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, /* 64-79 */
+    0x28, 0x29, 0x2a, 0x2b, 0x4c, 0x2d, 0x2e, 0x2f, /* 64-79;
+                                                       IRQ12=76/IPR4C */
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0xff, 0xff, 0x3a, 0x3b, 0x3c, 0xff, 0xff, 0xff, /* 80-95 */
     0x40, 0xff, 0x62, 0x63, 0xff, 0xff, 0x48, 0xff, /* SCI7: RXI7=98/IPR62,
                                                        TXI7=99/IPR63 */
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, /* 96-111 */
-    0xff, 0xff, 0x51, 0x51, 0x51, 0x51, 0x52, 0x52,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x6e, 0xff, /* 96-111;
+                                                       GROUPBL0=110/IPR6E */
+    0x70, 0xff, 0x51, 0x51, 0x51, 0x51, 0x52, 0x52, /* GROUPAL0=112/IPR70 */
     0x52, 0x53, 0x53, 0x54, 0x54, 0x55, 0x55, 0x56, /* 112-127 */
     0x56, 0x57, 0x57, 0x57, 0x57, 0x58, 0x59, 0x59,
     0x59, 0x59, 0x5a, 0x5b, 0x5b, 0x5b, 0x5c, 0x5c, /* 128-143 */
@@ -134,7 +149,13 @@ static const uint8_t levelirq[] = {
      * with the data register already empty, which only re-triggers if TXI is
      * level.
      */
-    37, 99,
+    61, 99,
+    /*
+     * GROUPBL0 (110) and GROUPAL0 (112) aggregate the SCI TEI/ERI sub-sources;
+     * the ICU drives them as a level while any group source is active, so they
+     * must be configured level-sensitive.
+     */
+    110, 112,
 };
 
 static void register_icu(RX72MState *s)
@@ -207,24 +228,29 @@ static void register_sci(RX72MState *s, int unit)
 {
     SysBusDevice *sci;
     hwaddr base;
-    int rxi_irq, txi_irq, eri_irq, tei_irq;
+    int rxi_irq, txi_irq, eri_grp, tei_grp;
     Chardev *chr;
 
+    /*
+     * TEI/ERI are group-interrupt sub-sources (not dedicated vectors). SCI1 is
+     * a GROUPBL0 source (bits 2/3); SCI7 is a GROUPAL0 source (bits 22/23). The
+     * ICU "grp" GPIO line encodes the (group, bit) pair.
+     */
     if (unit == 0) {
         /* SCI7 — RSK RX72M console UART */
         base     = RX72M_SCI7_BASE;
         rxi_irq  = RX72M_SCI7_RXI;
         txi_irq  = RX72M_SCI7_TXI;
-        eri_irq  = RX72M_GROUPBL0;
-        tei_irq  = RX72M_GROUPBL0;
+        tei_grp  = RX72M_SCI7_TEI_GRP;
+        eri_grp  = RX72M_SCI7_ERI_GRP;
         chr      = serial_hd(0);
     } else if (unit == 1) {
         /* SCI1 — SPI master for ADS1263 ADC */
         base     = RX72M_SCI1_BASE;
         rxi_irq  = RX72M_SCI1_RXI;
         txi_irq  = RX72M_SCI1_TXI;
-        eri_irq  = RX72M_SCI1_ERI;
-        tei_irq  = RX72M_SCI1_TEI;
+        tei_grp  = RX72M_SCI1_TEI_GRP;
+        eri_grp  = RX72M_SCI1_ERI_GRP;
         chr      = qemu_chardev_new("ads1263", TYPE_CHARDEV_ADS1263,
                                     NULL, NULL, &error_abort);
     } else {
@@ -239,13 +265,13 @@ static void register_sci(RX72MState *s, int unit)
     sysbus_realize(sci, &error_abort);
 
     sysbus_connect_irq(sci, ERI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), eri_irq));
+                       qdev_get_gpio_in_named(DEVICE(&s->icu), "grp", eri_grp));
     sysbus_connect_irq(sci, RXI,
                        qdev_get_gpio_in(DEVICE(&s->icu), rxi_irq));
     sysbus_connect_irq(sci, TXI,
                        qdev_get_gpio_in(DEVICE(&s->icu), txi_irq));
     sysbus_connect_irq(sci, TEI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), tei_irq));
+                       qdev_get_gpio_in_named(DEVICE(&s->icu), "grp", tei_grp));
     sysbus_mmio_map(sci, 0, base);
 }
 
