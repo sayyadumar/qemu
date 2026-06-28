@@ -49,6 +49,7 @@ struct RSCIState {
     int64_t trtime;
     int64_t rx_next;
     uint64_t input_freq;
+    bool suppress_tie;  /* suppress TIE in SCR (SSPI channels don't use TXI) */
 };
 
 #endif
