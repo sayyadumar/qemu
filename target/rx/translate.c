@@ -2029,9 +2029,8 @@ static bool trans_DCMP(DisasContext *ctx, arg_DCMP *a)
     if (!require_isa(ctx, RX_ISA_V3)) {
         return false;
     }
-    TCGv_i64 s1 = dr_read(a->drs1);
-    TCGv_i64 s2 = dr_read(a->drs2);
-    gen_helper_dcmp(tcg_env, s1, s2);
+    gen_helper_dcmp(tcg_env, tcg_constant_i32(a->cd),
+                    cpu_dregs[a->drs1], cpu_dregs[a->drs2]);
     return true;
 }
 
@@ -2417,16 +2416,20 @@ static bool trans_MVTDC(DisasContext *ctx, arg_MVTDC *a)
 }
 
 /*
- * mvfdr -- restore the DPFPU control registers saved by the last DPFPU
- * exception. QEMU does not raise DPFPU exceptions, so DECNT/DEPC never
- * hold a pending record and this reduces to clearing the exception count.
+ * mvfdr -- Z = DCMR.RES. Moves the result of the last DCMP into the PSW Z
+ * flag so it can be branched on; no other flag and no DPSW bit changes.
+ *
+ * psw_z holds the inverse of the architectural Z flag (Z is set when psw_z
+ * reads zero), so the RES bit is inverted on the way in.
  */
 static bool trans_MVFDR(DisasContext *ctx, arg_MVFDR *a)
 {
     if (!require_isa(ctx, RX_ISA_V3)) {
         return false;
     }
-    tcg_gen_movi_i32(cpu_dcregs[RX_DCR_DECNT], 0);
+    tcg_gen_extract_i32(cpu_psw_z, cpu_dcregs[RX_DCR_DCMR],
+                        RX_DCMR_RES_BIT, 1);
+    tcg_gen_xori_i32(cpu_psw_z, cpu_psw_z, 1);
     return true;
 }
 

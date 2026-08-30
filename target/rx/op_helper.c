@@ -271,24 +271,32 @@ FLOATOP64(dsub, float64_sub)
 FLOATOP64(dmul, float64_mul)
 FLOATOP64(ddiv, float64_div)
 
-void helper_dcmp(CPURXState *env, float64 t0, float64 t1)
+/*
+ * dcmp<cond> DRs, DRs2 -- evaluate the encoded condition and record the
+ * answer in DCMR.RES. Unlike the single-precision FCMP this leaves the PSW
+ * alone: MVFDR is the instruction that moves DCMR.RES into PSW.Z, which is
+ * the only reason MVFDR exists.
+ *
+ * The condition field is a mask of the relations that make RES true, so
+ * "le" is simply "lt" | "eq". A quiet comparison is used because an
+ * unordered result is one of the conditions the instruction can test for.
+ */
+void helper_dcmp(CPURXState *env, uint32_t cd, float64 t0, float64 t1)
 {
-    int st;
-    st = float64_compare(t0, t1, &env->fp_status);
-    update_fpsw64(env, float64_zero, GETPC());
-    env->psw_z = 1;
-    env->psw_s = env->psw_o = 0;
-    switch (st) {
-    case float_relation_equal:
-        env->psw_z = 0;
-        break;
-    case float_relation_less:
-        env->psw_s = -1;
-        break;
-    case float_relation_unordered:
-        env->psw_o = -1;
-        break;
+    int st = float64_compare_quiet(t0, t1, &env->fp_status);
+    bool res = false;
+
+    if ((cd & RX_DCMP_UN) && st == float_relation_unordered) {
+        res = true;
     }
+    if ((cd & RX_DCMP_EQ) && st == float_relation_equal) {
+        res = true;
+    }
+    if ((cd & RX_DCMP_LT) && st == float_relation_less) {
+        res = true;
+    }
+    env->dcr[RX_DCR_DCMR] = deposit32(env->dcr[RX_DCR_DCMR],
+                                      RX_DCMR_RES_BIT, 1, res);
 }
 
 float64 helper_dabs(CPURXState *env, float64 t0)

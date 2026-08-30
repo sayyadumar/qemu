@@ -157,6 +157,41 @@ class RXv3Machine(QemuSystemTest):
         # dsp=2 addressed scratch+8, so the .D displacement scale is 4.
         self.assertIn('dr8=0x4130000000000000', log)
 
+    def test_rxv3_dcmp_mvfdr(self):
+        """
+        DCMP records its answer in DCMR.RES and MVFDR moves that into PSW.Z,
+        so a conditional branch after the pair sees the comparison result.
+        """
+        self.set_machine('rsk-rx72m')
+
+        code = b''
+        code += bytes([0xF9, 0x03, 0x03]) + u32(0x3FF00000)  # DR0 = 1.0
+        code += bytes([0xF9, 0x03, 0x13]) + u32(0x40000000)  # DR1 = 2.0
+        # DCMPlt DR0, DR1 -> 1.0 < 2.0 is true, so DCMR.RES = 1
+        code += bytes([0x76, 0x90, 0x18, 0x40])
+        code += bytes([0x75, 0x90, 0x1B])   # MVFDR -> Z = 1
+        code += bytes([0x66, 0x11])         # R1 = 1
+        code += bytes([0x20, 0x04])         # BEQ +4, taken, skips the clear
+        code += bytes([0x66, 0x01])         # R1 = 0 (skipped)
+        code += bytes([0x66, 0x92])         # R2 = 9, reached marker
+        # DCMPeq DR0, DR1 -> 1.0 == 2.0 is false, so DCMR.RES = 0
+        code += bytes([0x76, 0x90, 0x18, 0x20])
+        code += bytes([0x75, 0x90, 0x1B])   # MVFDR -> Z = 0
+        code += bytes([0x66, 0x13])         # R3 = 1
+        code += bytes([0x20, 0x04])         # BEQ +4, not taken
+        code += bytes([0x66, 0x03])         # R3 = 0 (executed)
+        code += bytes([0x2E, 0x00])
+
+        log = self.run_image('rsk-rx72m',
+                             make_image(0xFFC00000, 4 * 1024 * 1024, code))
+
+        self.assertIn('dcmplt', log)
+        self.assertIn('mvfdr', log)
+        # The true comparison set DCMR.RES.
+        self.assertIn('dcmr=0x00000001', log)
+        # R1 kept its value (branch taken), R3 was cleared (branch not taken).
+        self.assertIn('r1=0x00000001 r2=0x00000009 r3=0x00000000', log)
+
     def test_rxv3_insn_rejected_on_rxv2(self):
         """
         An RXv3 DPFPU instruction must raise an illegal instruction

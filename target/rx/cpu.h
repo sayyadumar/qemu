@@ -94,6 +94,21 @@ enum {
 };
 
 /*
+ * DCMR.RES holds the result of the last DCMP; MVFDR copies it into PSW.Z.
+ * The manual names the bit but the bit position used here is an assumption.
+ */
+#define RX_DCMR_RES_BIT 0
+
+/*
+ * DCMP condition field. The four documented mnemonics (un, eq, lt, le) are
+ * a three bit mask of the relations that make DCMR.RES true, which is why
+ * le == lt | eq == 6.
+ */
+#define RX_DCMP_UN  1
+#define RX_DCMP_EQ  2
+#define RX_DCMP_LT  4
+
+/*
  * Instruction set architecture revision implemented by a CPU model.
  * Later revisions are supersets of earlier ones, so instruction gating is a
  * simple >= comparison.
