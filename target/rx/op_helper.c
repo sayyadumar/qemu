@@ -119,6 +119,46 @@ static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
     }
 }
 
+/*
+ * RXv3 register bank save function. SAVE copies R1-R15, the USP, the FPSW
+ * and the accumulator into the selected save register bank; RSTR copies them
+ * back. R0 is deliberately excluded: the stack pointer is not banked.
+ *
+ * The banks are internal CPU state that only these two instructions can
+ * reach, so there is no memory layout to model. The architectural maximum of
+ * 256 banks is provided; a bank number is always in range for an 8-bit
+ * operand, and a register operand is masked to the same range.
+ */
+void helper_save(CPURXState *env, uint32_t bank)
+{
+    RXSaveBank *b = &env->bank[bank % RX_SAVE_BANKS];
+    int i;
+
+    for (i = 1; i < NUM_REGS; i++) {
+        b->regs[i] = env->regs[i];
+    }
+    b->usp = env->psw_u ? env->regs[0] : env->usp;
+    b->fpsw = env->fpsw;
+    b->acc = env->acc;
+}
+
+void helper_rstr(CPURXState *env, uint32_t bank)
+{
+    RXSaveBank *b = &env->bank[bank % RX_SAVE_BANKS];
+    int i;
+
+    for (i = 1; i < NUM_REGS; i++) {
+        env->regs[i] = b->regs[i];
+    }
+    if (env->psw_u) {
+        env->regs[0] = b->usp;
+    } else {
+        env->usp = b->usp;
+    }
+    env->fpsw = b->fpsw;
+    env->acc = b->acc;
+}
+
 void helper_set_fpsw(CPURXState *env, uint32_t val)
 {
     static const int roundmode[] = {
