@@ -2350,7 +2350,13 @@ static bool trans_DMOVD_irh(DisasContext *ctx, arg_DMOVD_irh *a)
  * The DMOV.D memory forms name their DR operand in a post-byte that follows
  * the displacement, so it can only be read once rx_index_addr() has consumed
  * the displacement bytes.
+ *
+ * Per the RXv3 ISA manual the .D displacement is scaled by 4, not by the
+ * 8-byte transfer size: dsp:8 reaches 1020 (255 * 4) and dsp:16 reaches
+ * 262140 (65535 * 4). Note that binutils gas disagrees, scaling by 8 and
+ * requiring 8-byte alignment; the manual is taken as authoritative here.
  */
+#define DMOV_DSP_SHIFT 2
 static int dmov_postbyte_dr(DisasContext *ctx)
 {
     uint8_t b = translator_ldub(ctx->env, &ctx->base, ctx->base.pc_next);
@@ -2368,7 +2374,7 @@ static bool trans_DMOV_mst(DisasContext *ctx, arg_DMOV_mst *a)
         return false;
     }
     mem = tcg_temp_new();
-    addr = rx_index_addr(ctx, mem, a->ld, 3, a->rd);
+    addr = rx_index_addr(ctx, mem, a->ld, DMOV_DSP_SHIFT, a->rd);
     drs = dmov_postbyte_dr(ctx);
     tcg_gen_qemu_st_i64(cpu_dregs[drs], addr, 0, MO_TEUQ);
     return true;
@@ -2384,7 +2390,7 @@ static bool trans_DMOV_mld(DisasContext *ctx, arg_DMOV_mld *a)
         return false;
     }
     mem = tcg_temp_new();
-    addr = rx_index_addr(ctx, mem, a->ld, 3, a->rs);
+    addr = rx_index_addr(ctx, mem, a->ld, DMOV_DSP_SHIFT, a->rs);
     drd = dmov_postbyte_dr(ctx);
     tcg_gen_qemu_ld_i64(cpu_dregs[drd], addr, 0, MO_TEUQ);
     return true;

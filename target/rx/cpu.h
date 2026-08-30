@@ -77,11 +77,12 @@ enum {
     /*
      * RXv3 register bank save function. The banks are internal CPU state
      * reachable only through the SAVE and RSTR instructions, so no memory
-     * layout is involved. The architectural maximum is 256 banks; concrete
-     * parts implement fewer, and we model the maximum so that firmware
-     * targeting any RXv3 part works.
+     * layout is involved. How many banks exist is implementation defined,
+     * so the per-model count lives in RXCPUClass::num_save_banks and this
+     * is only the storage ceiling. RX72M/RX72N/RX72T provide 16, selected
+     * by bank numbers 0-15.
      */
-    RX_SAVE_BANKS = 256,
+    RX_MAX_SAVE_BANKS = 16,
 };
 
 /* RXv3 DPFPU control register numbers (MVFDC/MVTDC/DPUSHM.L/DPOPM.L). */
@@ -141,7 +142,7 @@ typedef struct CPUArchState {
     uint32_t dcr[NUM_DCREGS];   /* DPSW, DCMR, DECNT, DEPC */
 
     /* RXv3 register bank save function (SAVE/RSTR) */
-    RXSaveBank bank[RX_SAVE_BANKS];
+    RXSaveBank bank[RX_MAX_SAVE_BANKS];
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
@@ -183,6 +184,13 @@ struct RXCPUClass {
 
     /* Instruction set revision this model implements. */
     RXISAVersion isa_version;
+
+    /*
+     * Number of save register banks reachable by SAVE/RSTR, or 0 on models
+     * without the register bank save function. Must not exceed
+     * RX_MAX_SAVE_BANKS.
+     */
+    uint32_t num_save_banks;
 };
 
 #define CPU_RESOLVING_TYPE TYPE_RX_CPU

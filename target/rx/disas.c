@@ -1411,7 +1411,7 @@ static uint32_t disas_fetch(DisasContext *ctx, int n)
 }
 
 /*
- * DMOV.D displacements are scaled by the 8-byte transfer size, which
+ * DMOV.D displacements are scaled by 4 (see the note in translate.c), which
  * rx_index_addr() cannot express, so decode them here.
  */
 static void dmov_index_addr(DisasContext *ctx, char out[8], int ld)
@@ -1420,7 +1420,7 @@ static void dmov_index_addr(DisasContext *ctx, char out[8], int ld)
         out[0] = '\0';
         return;
     }
-    sprintf(out, "%u", disas_fetch(ctx, ld) << 3);
+    sprintf(out, "%u", disas_fetch(ctx, ld) << 2);
 }
 
 /* The DR operand of the DMOV.D memory forms sits in a trailing post-byte. */

@@ -133,21 +133,29 @@ class RXv3Machine(QemuSystemTest):
         code += bytes([0xF9, 0x03, 0x03]) + u32(0x41200000)
         code += bytes([0xF9, 0x03, 0x13]) + u32(0x41300000)
         code += bytes([0xFC, 0x78, 0x58, 0x00])         # DMOV.D DR0, [R5]
-        code += bytes([0xFC, 0x79, 0x58, 0x01, 0x10])   # DMOV.D DR1, 8[R5]
+        code += bytes([0xFC, 0x79, 0x58, 0x02, 0x10])   # DMOV.D DR1, 8[R5] (dsp*4)
         code += bytes([0xFC, 0xC8, 0x58, 0x40])         # DMOV.D [R5], DR4
-        code += bytes([0xFC, 0xC9, 0x58, 0x01, 0x50])   # DMOV.D 8[R5], DR5
+        code += bytes([0xFC, 0xC9, 0x58, 0x02, 0x50])   # DMOV.D 8[R5], DR5 (dsp*4)
         code += bytes([0x75, 0xB0, 0x01])               # DPUSHM.D DR0-DR1
         code += bytes([0x75, 0xB8, 0x61])               # DPOPM.D  DR6-DR7
+        # Pin the displacement scale: read back what the dsp=2 store wrote
+        # using a base register pointing at scratch+8 and no displacement.
+        # Only a scale of 4 puts DR1 there; a scale of 8 would have put it
+        # at scratch+16 and this would load zero.
+        code += bytes([0xFB, 0x62]) + u32(0x00010008)   # R6 = scratch + 8
+        code += bytes([0xFC, 0xC8, 0x68, 0x80])         # DMOV.D [R6], DR8
         code += bytes([0x2E, 0x00])
 
         log = self.run_image('rsk-rx72m',
                              make_image(0xFFC00000, 4 * 1024 * 1024, code))
 
-        # Values survived the store/load round trip, including the scaled
-        # 8-byte displacement, and the push/pop pair.
+        # Values survived the store/load round trip, including the
+        # displacement scaled by 4, and the push/pop pair.
         self.assertIn('dr4=0x4120000000000000 dr5=0x4130000000000000', log)
         self.assertIn('dr6=0x4120000000000000 dr7=0x4130000000000000', log)
         self.assertIn('r0=0x00020000', log)   # stack pointer restored
+        # dsp=2 addressed scratch+8, so the .D displacement scale is 4.
+        self.assertIn('dr8=0x4130000000000000', log)
 
     def test_rxv3_insn_rejected_on_rxv2(self):
         """

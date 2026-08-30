@@ -277,7 +277,11 @@ static void rx65n_cpu_class_init(ObjectClass *klass, const void *data)
 
 static void rx72m_cpu_class_init(ObjectClass *klass, const void *data)
 {
-    RX_CPU_CLASS(klass)->isa_version = RX_ISA_V3;
+    RXCPUClass *rcc = RX_CPU_CLASS(klass);
+
+    rcc->isa_version = RX_ISA_V3;
+    /* RX72M provides 16 save register banks, selected by bank numbers 0-15. */
+    rcc->num_save_banks = 16;
 }
 
 static const TypeInfo rx_cpu_info = {
