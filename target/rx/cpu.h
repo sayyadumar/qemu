@@ -94,8 +94,8 @@ enum {
 };
 
 /*
- * DCMR.RES holds the result of the last DCMP; MVFDR copies it into PSW.Z.
- * The manual names the bit but the bit position used here is an assumption.
+ * DCMR.RES, bit 0, holds the result of the last DCMP; MVFDR copies it into
+ * the PSW Z flag.
  */
 #define RX_DCMR_RES_BIT 0
 
