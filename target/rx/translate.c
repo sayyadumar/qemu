@@ -2405,13 +2405,13 @@ static bool trans_MVFDC(DisasContext *ctx, arg_MVFDC *a)
     return true;
 }
 
-/* mvtdc rs, DCRd */
+/* mvtdc rs, DCRd -- see helper_mvtdc for the per-register write rules */
 static bool trans_MVTDC(DisasContext *ctx, arg_MVTDC *a)
 {
     if (!require_isa(ctx, RX_ISA_V3)) {
         return false;
     }
-    tcg_gen_mov_i32(cpu_dcregs[a->dcrd], cpu_regs[a->rs]);
+    gen_helper_mvtdc(tcg_env, tcg_constant_i32(a->dcrd), cpu_regs[a->rs]);
     return true;
 }
 

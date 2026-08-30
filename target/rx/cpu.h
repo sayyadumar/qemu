@@ -68,6 +68,49 @@ FIELD(FPSW, FX, 30, 1)
 FIELD(FPSW, FLAGS, 26, 4)
 FIELD(FPSW, FS, 31, 1)
 
+/* DPSW define. The DPFPU status word mirrors the FPSW layout exactly. */
+REG32(DPSW, 0)
+FIELD(DPSW, DRM, 0, 2)
+FIELD(DPSW, DCV, 2, 1)
+FIELD(DPSW, DCO, 3, 1)
+FIELD(DPSW, DCZ, 4, 1)
+FIELD(DPSW, DCU, 5, 1)
+FIELD(DPSW, DCX, 6, 1)
+FIELD(DPSW, DCE, 7, 1)
+FIELD(DPSW, CAUSE, 2, 6)
+FIELD(DPSW, DDN, 8, 1)
+FIELD(DPSW, DEV, 10, 1)
+FIELD(DPSW, DEO, 11, 1)
+FIELD(DPSW, DEZ, 12, 1)
+FIELD(DPSW, DEU, 13, 1)
+FIELD(DPSW, DEX, 14, 1)
+FIELD(DPSW, ENABLE, 10, 5)
+FIELD(DPSW, DFV, 26, 1)
+FIELD(DPSW, DFO, 27, 1)
+FIELD(DPSW, DFZ, 28, 1)
+FIELD(DPSW, DFU, 29, 1)
+FIELD(DPSW, DFX, 30, 1)
+/* DFS is the OR of DFV, DFO, DFZ and DFU only; DFX is not included. */
+FIELD(DPSW, FLAGS, 26, 4)
+FIELD(DPSW, DFS, 31, 1)
+
+/*
+ * Writable bits of DPSW: DRM, the DC* causes, DDN, the DE* enables and the
+ * DF* flags. The reserved bits and the read-only DFS summary are masked out.
+ */
+#define RX_DPSW_WRITE_MASK 0x7c007dff
+/* The DC* cause bits, which MVTDC can only clear, never set. */
+#define RX_DPSW_CAUSE_MASK 0x000000fc
+
+/* DECNT define: DP exception information preservation. */
+REG32(DECNT, 0)
+FIELD(DECNT, EHM, 0, 1)
+FIELD(DECNT, EHS, 16, 1)
+#define RX_DECNT_RESET 0x00000001   /* EHM = 1 out of reset */
+
+/* DCMR holds only the RES bit; everything else reads as 0. */
+#define RX_DCMR_WRITE_MASK 0x00000001
+
 enum {
     NUM_REGS = 16,
     /* RXv3 DPFPU: DR0-DR15 are dedicated 64-bit registers, not GPR pairs. */
@@ -169,6 +212,7 @@ typedef struct CPUArchState {
     uint32_t ack_irq;           /* execute irq */
     uint32_t ack_ipl;           /* execute ipl */
     float_status fp_status;
+    float_status dp_status;
     qemu_irq ack;               /* Interrupt acknowledge */
 } CPURXState;
 

@@ -105,7 +105,10 @@ class RXv3Machine(QemuSystemTest):
         code += bytes([0xFB, 0x42]) + u32(0x12345678)
         # XOR R4, R4, R5 -> R5 = 0 (three-operand XOR is RXv3)
         code += bytes([0xFF, 0x65, 0x44])
-        # MVTDC R4, DPSW ; MVFDC DPSW, R6 -> R6 = R4
+        # MVTDC R4, DPSW ; MVFDC DPSW, R6. DPSW does not take the value
+        # verbatim: reserved bits drop out, the DC* cause bits cannot be set
+        # by writing 1, and DFS is recomputed. 0x12345678 lands as
+        # 0x90005400, which is what MVFDC reads back.
         code += bytes([0xFD, 0x77, 0x84, 0x04])
         code += bytes([0xFD, 0x75, 0x86, 0x04])
         # SAVE #1 ; MOV.L #0, R1 ; RSTR #1 -> R1 is restored
@@ -130,8 +133,8 @@ class RXv3Machine(QemuSystemTest):
         self.assertIn('dr0=0x3ff0000000000000', state)
         self.assertIn('dr2=0x4008000000000000', state)   # 1.0 + 2.0
         self.assertIn('dr3=0x4000000000000000', state)   # 1.0 * 2.0
-        self.assertIn('dpsw=0x12345678', state)          # MVTDC
-        self.assertIn('r4=0x12345678 r5=0x00000000 r6=0x12345678 '
+        self.assertIn('dpsw=0x90005400', state)          # MVTDC write rules
+        self.assertIn('r4=0x12345678 r5=0x00000000 r6=0x90005400 '
                       'r7=0x00007800', state)            # XOR/MVFDC/BFMOVZ
         self.assertIn('r1=0x40080000', state)            # survived SAVE/RSTR
 
@@ -212,6 +215,59 @@ class RXv3Machine(QemuSystemTest):
         self.assertIn('r1=0x00000001 r2=0x00000000', state)
         # The second, false comparison left DCMR.RES clear.
         self.assertIn('dcmr=0x00000000', state)
+
+    def test_rxv3_dpsw_write_rules(self):
+        """
+        MVTDC does not write DPSW verbatim: reserved bits read back as 0,
+        the DC* cause bits clear on a written 0 but keep their value on a
+        written 1 (so they cannot be set from software), and DFS is a
+        read-only summary of DFV, DFO, DFZ and DFU.
+
+        Writing all ones therefore reads back as 0xfc007d03: DRM keeps both
+        bits, the causes stay clear, the enables and DF* flags are set, the
+        reserved bits drop out and DFS is computed.
+        """
+        self.set_machine('rsk-rx72m')
+
+        code = b''
+        code += bytes([0xFB, 0x42]) + u32(0xFFFFFFFF)  # R4 = all ones
+        code += bytes([0xFD, 0x77, 0x84, 0x04])        # MVTDC R4, DPSW
+        code += bytes([0xFD, 0x75, 0x86, 0x04])        # MVFDC DPSW, R6
+        code += bytes([0x2E, 0x00])
+
+        log = self.run_image('rsk-rx72m',
+                             make_image(0xFFC00000, 4 * 1024 * 1024, code))
+        state = self.final_state(log)
+        self.assertIn('dpsw=0xfc007d03', state)
+        self.assertIn('r6=0xfc007d03', state)
+
+    def test_rxv3_dpsw_rounding_mode(self):
+        """
+        DPSW.DRM selects the double-precision rounding mode, independently of
+        the FPSW rounding mode used by the single-precision unit.
+
+        1.0/10.0 is inexact, so the mode is visible in the result: rounding
+        to nearest gives ...99a and rounding towards zero truncates to ...999.
+        The inexact cause and flag bits should be set either way.
+        """
+        self.set_machine('rsk-rx72m')
+
+        code = b''
+        code += bytes([0xF9, 0x03, 0x03]) + u32(0x3FF00000)  # DR0 = 1.0
+        code += bytes([0xF9, 0x03, 0x13]) + u32(0x40240000)  # DR1 = 10.0
+        code += bytes([0x76, 0x90, 0x15, 0x20])   # DDIV -> DR2, DRM = nearest
+        code += bytes([0x66, 0x14])               # R4 = 1
+        code += bytes([0xFD, 0x77, 0x84, 0x04])   # MVTDC R4, DPSW: DRM = to 0
+        code += bytes([0x76, 0x90, 0x15, 0x30])   # DDIV -> DR3, DRM = to zero
+        code += bytes([0x2E, 0x00])
+
+        log = self.run_image('rsk-rx72m',
+                             make_image(0xFFC00000, 4 * 1024 * 1024, code))
+        state = self.final_state(log)
+        self.assertIn('dr2=0x3fb999999999999a', state)   # round to nearest
+        self.assertIn('dr3=0x3fb9999999999999', state)   # round towards zero
+        # DRM kept, and the inexact cause (DCX, b6) and flag (DFX, b30) set.
+        self.assertIn('dpsw=0x40000041', state)
 
     def test_rxv3_insn_rejected_on_rxv2(self):
         """
