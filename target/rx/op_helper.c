@@ -272,27 +272,34 @@ FLOATOP64(dmul, float64_mul)
 FLOATOP64(ddiv, float64_div)
 
 /*
- * dcmp<cond> DRs, DRs2 -- evaluate the encoded condition and record the
- * answer in DCMR.RES. Unlike the single-precision FCMP this leaves the PSW
- * alone: MVFDR is the instruction that moves DCMR.RES into PSW.Z, which is
- * the only reason MVFDR exists.
+ * dcmp<cm> src, src2 -- compare src2 against src as directed by cm and
+ * record the answer in DCMR.RES.
  *
- * The condition field is a mask of the relations that make RES true, so
- * "le" is simply "lt" | "eq". A quiet comparison is used because an
- * unordered result is one of the conditions the instruction can test for.
+ * Mind the operand order: the manual defines every relation as src2 REL
+ * src, so LT is true when the *second* operand is the smaller one. src is
+ * the first encoded register (drs1) and src2 the second (drs2).
+ *
+ * Unlike the single-precision FCMP this leaves the PSW alone; MVFDR is what
+ * moves DCMR.RES into PSW.Z, and is the only reason MVFDR exists.
+ *
+ * The condition field is a mask of the relations that make RES true, which
+ * is why LE (6) is LT (4) | EQ (2); it agrees with the manual on all four
+ * documented conditions. UN is defined as isNaN(src) || isNaN(src2), which
+ * is exactly what an unordered comparison reports. The comparison is quiet
+ * because testing for unordered is one of the conditions on offer.
  */
-void helper_dcmp(CPURXState *env, uint32_t cd, float64 t0, float64 t1)
+void helper_dcmp(CPURXState *env, uint32_t cm, float64 src, float64 src2)
 {
-    int st = float64_compare_quiet(t0, t1, &env->fp_status);
+    int st = float64_compare_quiet(src2, src, &env->fp_status);
     bool res = false;
 
-    if ((cd & RX_DCMP_UN) && st == float_relation_unordered) {
+    if ((cm & RX_DCMP_UN) && st == float_relation_unordered) {
         res = true;
     }
-    if ((cd & RX_DCMP_EQ) && st == float_relation_equal) {
+    if ((cm & RX_DCMP_EQ) && st == float_relation_equal) {
         res = true;
     }
-    if ((cd & RX_DCMP_LT) && st == float_relation_less) {
+    if ((cm & RX_DCMP_LT) && st == float_relation_less) {
         res = true;
     }
     env->dcr[RX_DCR_DCMR] = deposit32(env->dcr[RX_DCR_DCMR],

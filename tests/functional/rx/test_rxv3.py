@@ -13,6 +13,7 @@
 # later.  See the COPYING file in the top-level directory.
 
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -70,6 +71,18 @@ class RXv3Machine(QemuSystemTest):
         finally:
             os.unlink(path)
 
+    def final_state(self, log):
+        """
+        Return the last CPU register dump from a -d cpu log.
+
+        The log holds one dump per translation block, so matching against the
+        whole thing would happily accept a value the program only held
+        transiently. Assertions about results belong against this.
+        """
+        parts = re.split(r'^pc=', log, flags=re.M)
+        self.assertGreater(len(parts), 1, 'no CPU state dump in log')
+        return 'pc=' + parts[-1]
+
     def test_rxv3_dpfpu(self):
         """
         Exercise the RXv3 DPFPU, bit field and register bank instructions on
@@ -113,13 +126,14 @@ class RXv3Machine(QemuSystemTest):
             self.assertIn(mnemonic, log)
 
         # Arithmetic and transfers produced the expected values.
-        self.assertIn('dr0=0x3ff0000000000000', log)
-        self.assertIn('dr2=0x4008000000000000', log)   # 1.0 + 2.0
-        self.assertIn('dr3=0x4000000000000000', log)   # 1.0 * 2.0
-        self.assertIn('dpsw=0x12345678', log)          # MVTDC
+        state = self.final_state(log)
+        self.assertIn('dr0=0x3ff0000000000000', state)
+        self.assertIn('dr2=0x4008000000000000', state)   # 1.0 + 2.0
+        self.assertIn('dr3=0x4000000000000000', state)   # 1.0 * 2.0
+        self.assertIn('dpsw=0x12345678', state)          # MVTDC
         self.assertIn('r4=0x12345678 r5=0x00000000 r6=0x12345678 '
-                      'r7=0x00007800', log)            # XOR/MVFDC/BFMOVZ
-        self.assertIn('r1=0x40080000', log)            # survived SAVE/RSTR
+                      'r7=0x00007800', state)            # XOR/MVFDC/BFMOVZ
+        self.assertIn('r1=0x40080000', state)            # survived SAVE/RSTR
 
     def test_rxv3_memory_and_stack(self):
         """
@@ -151,35 +165,40 @@ class RXv3Machine(QemuSystemTest):
 
         # Values survived the store/load round trip, including the
         # displacement scaled by 4, and the push/pop pair.
-        self.assertIn('dr4=0x4120000000000000 dr5=0x4130000000000000', log)
-        self.assertIn('dr6=0x4120000000000000 dr7=0x4130000000000000', log)
-        self.assertIn('r0=0x00020000', log)   # stack pointer restored
+        state = self.final_state(log)
+        self.assertIn('dr4=0x4120000000000000 dr5=0x4130000000000000', state)
+        self.assertIn('dr6=0x4120000000000000 dr7=0x4130000000000000', state)
+        self.assertIn('r0=0x00020000', state)   # stack pointer restored
         # dsp=2 addressed scratch+8, so the .D displacement scale is 4.
-        self.assertIn('dr8=0x4130000000000000', log)
+        self.assertIn('dr8=0x4130000000000000', state)
 
     def test_rxv3_dcmp_mvfdr(self):
         """
         DCMP records its answer in DCMR.RES and MVFDR moves that into PSW.Z,
         so a conditional branch after the pair sees the comparison result.
+
+        The manual defines every DCMP relation as "src2 REL src", so the
+        second operand is the left hand side; both operand orders are tested
+        here because getting that backwards still passes a one-sided test.
         """
         self.set_machine('rsk-rx72m')
 
         code = b''
         code += bytes([0xF9, 0x03, 0x03]) + u32(0x3FF00000)  # DR0 = 1.0
         code += bytes([0xF9, 0x03, 0x13]) + u32(0x40000000)  # DR1 = 2.0
-        # DCMPlt DR0, DR1 -> 1.0 < 2.0 is true, so DCMR.RES = 1
-        code += bytes([0x76, 0x90, 0x18, 0x40])
+        # DCMPlt src=DR1, src2=DR0 -> RES = (DR0 < DR1) = 1.0 < 2.0 = true
+        code += bytes([0x76, 0x90, 0x08, 0x41])
         code += bytes([0x75, 0x90, 0x1B])   # MVFDR -> Z = 1
         code += bytes([0x66, 0x11])         # R1 = 1
         code += bytes([0x20, 0x04])         # BEQ +4, taken, skips the clear
         code += bytes([0x66, 0x01])         # R1 = 0 (skipped)
-        code += bytes([0x66, 0x92])         # R2 = 9, reached marker
-        # DCMPeq DR0, DR1 -> 1.0 == 2.0 is false, so DCMR.RES = 0
-        code += bytes([0x76, 0x90, 0x18, 0x20])
+        # DCMPlt src=DR0, src2=DR1 -> RES = (DR1 < DR0) = 2.0 < 1.0 = false.
+        # Comparing the operands the wrong way round makes this one true.
+        code += bytes([0x76, 0x90, 0x18, 0x40])
         code += bytes([0x75, 0x90, 0x1B])   # MVFDR -> Z = 0
-        code += bytes([0x66, 0x13])         # R3 = 1
+        code += bytes([0x66, 0x12])         # R2 = 1
         code += bytes([0x20, 0x04])         # BEQ +4, not taken
-        code += bytes([0x66, 0x03])         # R3 = 0 (executed)
+        code += bytes([0x66, 0x02])         # R2 = 0 (executed)
         code += bytes([0x2E, 0x00])
 
         log = self.run_image('rsk-rx72m',
@@ -187,10 +206,12 @@ class RXv3Machine(QemuSystemTest):
 
         self.assertIn('dcmplt', log)
         self.assertIn('mvfdr', log)
-        # The true comparison set DCMR.RES.
-        self.assertIn('dcmr=0x00000001', log)
-        # R1 kept its value (branch taken), R3 was cleared (branch not taken).
-        self.assertIn('r1=0x00000001 r2=0x00000009 r3=0x00000000', log)
+        # R1 kept its value (branch taken), R2 was cleared (not taken).
+        # Comparing the operands the wrong way round inverts both.
+        state = self.final_state(log)
+        self.assertIn('r1=0x00000001 r2=0x00000000', state)
+        # The second, false comparison left DCMR.RES clear.
+        self.assertIn('dcmr=0x00000000', state)
 
     def test_rxv3_insn_rejected_on_rxv2(self):
         """
