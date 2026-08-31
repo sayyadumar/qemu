@@ -27,6 +27,10 @@
 #include "hw/loader.h"
 #include "hw/sysbus.h"
 #include "hw/qdev-properties.h"
+#include "system/reset.h"
+#include "hw/qdev-properties-system.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
 #include "hw/misc/unimp.h"
 #include "net/net.h"
 #include "system/system.h"
@@ -311,6 +315,17 @@ static void register_fcu(RX65NState *s, RX65NClass *rxc)
     qdev_prop_set_uint32(DEVICE(fcu), "data-flash-size", rxc->data_flash_size);
     qdev_prop_set_uint32(DEVICE(fcu), "code-flash-base", s->cflash_base);
     qdev_prop_set_uint32(DEVICE(fcu), "data-flash-base", RX65N_DFLASH_BASE);
+    /*
+     * Optional persistent backing: -drive if=pflash,unit=0 for the code
+     * flash and unit=1 for the data flash. Without them the arrays are
+     * volatile and start erased.
+     */
+    qdev_prop_set_drive(DEVICE(fcu), "code-flash-drive",
+                        drive_get(IF_PFLASH, 0, 0) ?
+                        blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 0)) : NULL);
+    qdev_prop_set_drive(DEVICE(fcu), "data-flash-drive",
+                        drive_get(IF_PFLASH, 0, 1) ?
+                        blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 1)) : NULL);
     sysbus_realize(fcu, &error_abort);
 
     /* Region 0: FACI registers; region 1: code flash; region 2: data flash. */
@@ -385,6 +400,28 @@ static void register_rtc(RX65NState *s)
     sysbus_mmio_map(rtc, 0, RX65N_RTC_BASE);
 }
 
+/*
+ * The CPU latches its reset vector during CPU reset, which the SoC has to
+ * run before the peripherals exist because the interrupt controller needs a
+ * realized CPU. That is fine for a firmware image loaded with -bios, which
+ * the ROM loader can answer for at any time, but not for a code flash backed
+ * by a drive: nothing is mapped at the vector address yet. Re-read it here,
+ * from a handler that runs at machine reset once every region is in place.
+ */
+static void rx65n_reset_vector(void *opaque)
+{
+    RX65NState *s = opaque;
+    uint32_t vec;
+
+    if (rom_ptr(0xfffffffc, 4)) {
+        return;     /* a ROM blob covers the vector; the CPU already has it */
+    }
+    vec = ldl_le_phys(CPU(&s->cpu)->as, 0xfffffffc);
+    if (vec != 0 && vec != 0xffffffff) {
+        s->cpu.env.pc = vec;
+    }
+}
+
 static void rx65n_realize(DeviceState *dev, Error **errp)
 {
     RX65NState *s = RX65N_MCU(dev);
@@ -456,6 +493,8 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_s12ad(s);
     register_rspi(s);
     register_etherc(s);
+    qemu_register_reset(rx65n_reset_vector, s);
+
 }
 
 static const Property rx65n_properties[] = {

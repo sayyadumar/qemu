@@ -40,6 +40,10 @@
 #include "hw/misc/renesas_rx_fcu.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
+#include "system/block-backend.h"
+#include "hw/block/block.h"
+#include "qemu/error-report.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 
@@ -143,6 +147,38 @@ static void faci_illegal(RenesasRxFcuState *s)
     }
 }
 
+/*
+ * Write a modified range of an array back to its block backend, if one is
+ * attached. Offsets are widened to sector boundaries the way pflash does.
+ */
+static void fcu_flash_sync(RenesasRxFcuState *s, RxFcuTarget t,
+                           uint32_t off, uint32_t len)
+{
+    BlockBackend *blk = t == RX_FCU_CFLASH ? s->cflash_blk : s->dflash_blk;
+    bool ro = t == RX_FCU_CFLASH ? s->cflash_ro : s->dflash_ro;
+    uint32_t size = target_size(s, t);
+    uint64_t start, end;
+    int ret;
+
+    if (!blk || ro) {
+        return;
+    }
+    start = QEMU_ALIGN_DOWN(off, BDRV_SECTOR_SIZE);
+    end = QEMU_ALIGN_UP((uint64_t)off + len, BDRV_SECTOR_SIZE);
+    if (end > size) {
+        end = size;
+    }
+    if (start >= end) {
+        return;
+    }
+    ret = blk_pwrite(blk, start, end - start,
+                     target_storage(s, t) + start, 0);
+    if (ret < 0) {
+        error_report("renesas-rx-fcu: could not write flash image: %s",
+                     strerror(-ret));
+    }
+}
+
 static void faci_block_erase(RenesasRxFcuState *s, RxFcuTarget t, uint32_t off)
 {
     uint32_t block = t == RX_FCU_CFLASH ? CFLASH_ERASE_BLOCK
@@ -158,6 +194,7 @@ static void faci_block_erase(RenesasRxFcuState *s, RxFcuTarget t, uint32_t off)
         block = size - start;
     }
     memset(target_storage(s, t) + start, 0xff, block);
+    fcu_flash_sync(s, t, start, block);
     s->fpsaddr = (t == RX_FCU_CFLASH ? s->cflash_base : s->dflash_base) + start;
     faci_complete(s);
 }
@@ -244,6 +281,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
                 /* Flash programming can only clear bits; emulate write as AND. */
                 uint16_t cur = lduw_le_p(p + s->prog_off);
                 stw_le_p(p + s->prog_off, cur & (uint16_t)value);
+                fcu_flash_sync(s, s->cmd_target, s->prog_off, 2);
             }
             s->prog_off += 2;
             s->prog_words--;
@@ -515,6 +553,45 @@ static void rx_fcu_reset(DeviceState *dev)
     qemu_set_irq(s->fiferr, 0);
 }
 
+/*
+ * Attach one array to its block backend: take the write permission if the
+ * image allows it, then load the image over the erased contents. A backend
+ * whose size does not match the array is rejected rather than silently
+ * truncated.
+ */
+static bool fcu_attach_blk(RenesasRxFcuState *s, DeviceState *dev,
+                           RxFcuTarget t, Error **errp)
+{
+    BlockBackend *blk = t == RX_FCU_CFLASH ? s->cflash_blk : s->dflash_blk;
+    MemoryRegion *mr = t == RX_FCU_CFLASH ? &s->cflash_mr : &s->dflash_mr;
+    uint32_t size = target_size(s, t);
+    uint64_t perm;
+    bool ro;
+
+    if (!blk) {
+        return true;
+    }
+
+    ro = !blk_supports_write_perm(blk);
+    if (t == RX_FCU_CFLASH) {
+        s->cflash_ro = ro;
+    } else {
+        s->dflash_ro = ro;
+    }
+
+    perm = BLK_PERM_CONSISTENT_READ | (ro ? 0 : BLK_PERM_WRITE);
+    if (blk_set_perm(blk, perm, BLK_PERM_ALL, errp) < 0) {
+        return false;
+    }
+
+    if (!blk_check_size_and_read_all(blk, dev, target_storage(s, t),
+                                     size, errp)) {
+        vmstate_unregister_ram(mr, dev);
+        return false;
+    }
+    return true;
+}
+
 static void rx_fcu_realize(DeviceState *dev, Error **errp)
 {
     RenesasRxFcuState *s = RENESAS_RX_FCU(dev);
@@ -559,6 +636,11 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
     memset(s->cflash_ptr, 0xff, s->cflash_size);
     memset(s->dflash_ptr, 0xff, s->dflash_size);
 
+    if (!fcu_attach_blk(s, dev, RX_FCU_CFLASH, errp) ||
+        !fcu_attach_blk(s, dev, RX_FCU_DFLASH, errp)) {
+        return;
+    }
+
     sysbus_init_mmio(sbd, &s->regs_mr);
     sysbus_init_mmio(sbd, &s->cflash_mr);
     sysbus_init_mmio(sbd, &s->dflash_mr);
@@ -567,6 +649,8 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property rx_fcu_properties[] = {
+    DEFINE_PROP_DRIVE("code-flash-drive", RenesasRxFcuState, cflash_blk),
+    DEFINE_PROP_DRIVE("data-flash-drive", RenesasRxFcuState, dflash_blk),
     DEFINE_PROP_UINT32("code-flash-size", RenesasRxFcuState, cflash_size, 0),
     DEFINE_PROP_UINT32("data-flash-size", RenesasRxFcuState, dflash_size, 0),
     DEFINE_PROP_UINT32("code-flash-base", RenesasRxFcuState, cflash_base, 0),

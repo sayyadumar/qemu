@@ -26,6 +26,8 @@
 #include "qom/object.h"
 
 #define TYPE_RENESAS_RX_FCU "renesas-rx-fcu"
+#include "system/block-backend.h"
+
 typedef struct RenesasRxFcuState RenesasRxFcuState;
 DECLARE_INSTANCE_CHECKER(RenesasRxFcuState, RENESAS_RX_FCU, TYPE_RENESAS_RX_FCU)
 
@@ -95,6 +97,16 @@ struct RenesasRxFcuState {
     /* Backing storage pointers (into the rom_device RAM). */
     uint8_t *cflash_ptr;
     uint8_t *dflash_ptr;
+
+    /*
+     * Optional block backends. When present the array is loaded from the
+     * image at realize and every program or erase is written back, so flash
+     * contents survive across runs the way real flash does.
+     */
+    BlockBackend *cflash_blk;
+    BlockBackend *dflash_blk;
+    bool cflash_ro;
+    bool dflash_ro;
 
     /* FACI registers. */
     uint16_t fentryr;           /* P/E mode entry (read-back form)    */

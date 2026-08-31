@@ -36,14 +36,18 @@ class RXFcuMachine(QemuSystemTest):
 
     timeout = 30
 
-    def run_image(self, image):
+    def run_image(self, image, drives=(), bios=True):
         with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
             f.write(image)
             path = f.name
         try:
             cmd = [self.qemu_bin, '-machine', 'rx65n-r5f565ne-evk',
-                   '-bios', path, '-nographic',
-                   '-d', 'cpu,guest_errors']
+                   '-nographic', '-d', 'cpu,guest_errors']
+            if bios:
+                cmd += ['-bios', path]
+            for unit, image_path in drives:
+                cmd += ['-drive', 'if=pflash,unit=%d,format=raw,file=%s'
+                        % (unit, image_path)]
             proc = subprocess.run(cmd, capture_output=True, timeout=10,
                                   text=True, errors='replace')
             return proc.stdout + proc.stderr
@@ -114,6 +118,74 @@ class RXFcuMachine(QemuSystemTest):
         # The sequence should be accepted without the FCU complaining.
         self.assertNotIn('renesas-rx-fcu:', log)
         self.assertIn('r4=0xffff1234', self.final_state(log))
+
+
+    def test_data_flash_persists_across_runs(self):
+        """
+        A data flash image supplied with -drive keeps what the guest
+        programmed into it, so a later run sees the value.
+        """
+        self.set_machine('rx65n-r5f565ne-evk')
+
+        with tempfile.NamedTemporaryFile(suffix='.img', delete=False) as f:
+            f.write(b'\xff' * (32 * 1024))
+            dflash = f.name
+        try:
+            # First run programs 0x1234 into the first half word.
+            code = b''
+            code += bytes([0xFB, 0x12]) + u32(FCU_BASE)
+            code += bytes([0xF9, 0x19, 0x42, 0x80, 0xAA])
+            code += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
+            code += bytes([0xF9, 0x34, 0x00, 0xE8])
+            code += bytes([0xF9, 0x34, 0x00, 0x01])
+            code += bytes([0xF9, 0x39, 0x00, 0x34, 0x12])
+            code += bytes([0xF9, 0x34, 0x00, 0xD0])
+            code += bytes([0xF9, 0x19, 0x42, 0x00, 0xAA])
+            code += bytes([0xA8, 0x34])
+            code += bytes([0x2E, 0x00])
+            log = self.run_image(make_image(code), drives=((1, dflash),))
+            self.assertIn('r4=0xffff1234', self.final_state(log))
+
+            # It reached the image on disk.
+            with open(dflash, 'rb') as f:
+                self.assertEqual(f.read(4), b'\x34\x12\xff\xff')
+
+            # A second, read-only firmware sees it in a fresh QEMU.
+            readback = b''
+            readback += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
+            readback += bytes([0xA8, 0x34])
+            readback += bytes([0x2E, 0x00])
+            log = self.run_image(make_image(readback), drives=((1, dflash),))
+            self.assertIn('r4=0xffff1234', self.final_state(log))
+
+            # Without the drive the array is erased again.
+            log = self.run_image(make_image(readback))
+            self.assertIn('r4=0xffffffff', self.final_state(log))
+        finally:
+            os.unlink(dflash)
+
+    def test_boot_from_code_flash_drive(self):
+        """
+        A code flash image supplied with -drive is bootable on its own: the
+        reset vector is taken from it even though no -bios was given.
+        """
+        self.set_machine('rx65n-r5f565ne-evk')
+
+        code = b''
+        code += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
+        code += bytes([0xA8, 0x34])
+        code += bytes([0x2E, 0x00])
+
+        with tempfile.NamedTemporaryFile(suffix='.img', delete=False) as f:
+            f.write(make_image(code))
+            cflash = f.name
+        try:
+            log = self.run_image(b'', drives=((0, cflash),), bios=False)
+            # It ran the firmware out of the drive rather than sitting at 0.
+            self.assertIn('r3=0x00100000', self.final_state(log))
+            self.assertIn('r4=0xffffffff', self.final_state(log))
+        finally:
+            os.unlink(cflash)
 
 
 if __name__ == '__main__':
