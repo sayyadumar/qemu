@@ -549,6 +549,16 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
     s->cflash_ptr = memory_region_get_ram_ptr(&s->cflash_mr);
     s->dflash_ptr = memory_region_get_ram_ptr(&s->dflash_mr);
 
+    /*
+     * Erased flash reads as all ones, but the backing memory starts zeroed.
+     * Fill both arrays here rather than at reset: realize runs before the
+     * ROM loader writes the firmware image into the code flash, and flash
+     * is non-volatile, so anything the guest programmed must survive a
+     * later system reset.
+     */
+    memset(s->cflash_ptr, 0xff, s->cflash_size);
+    memset(s->dflash_ptr, 0xff, s->dflash_size);
+
     sysbus_init_mmio(sbd, &s->regs_mr);
     sysbus_init_mmio(sbd, &s->cflash_mr);
     sysbus_init_mmio(sbd, &s->dflash_mr);
