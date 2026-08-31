@@ -35,6 +35,7 @@
 #include "hw/net/renesas_etherc.h"
 #include "hw/misc/rx65n_sysclk.h"
 #include "hw/misc/renesas_rx_fcu.h"
+#include "hw/misc/renesas_rx_crc.h"
 #include "hw/gpio/renesas_rx_gpio.h"
 #include "hw/dma/renesas_rx_dmac.h"
 #include "hw/dma/renesas_rx_dtc.h"
@@ -88,6 +89,9 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_TMR_BASE      0x00088200
 #define RX65N_CMT_BASE      0x00088000
 /* SCIg/SCIh channels: SCI0 @ 0x8A000, 0x20 spacing (HW manual section 5) */
+/* CRC calculator (CRCA) */
+#define RX65N_CRC_BASE      0x00088280
+
 #define RX65N_SCI_BASE      0x0008A000
 #define RX65N_SCI_SPACING   0x20
 #define RX65N_SCI4_BASE     (RX65N_SCI_BASE + 4 * RX65N_SCI_SPACING)
@@ -141,6 +145,7 @@ struct RX65NState {
     RX65NEthercState etherc;
     RX65NSysClkState sysclk;
     RenesasRxFcuState fcu;
+    RenesasRxCrcState crc;
     RenesasRxGpioState gpio;
     RenesasRxDmacState dmac;
     RenesasRxDtcState dtc;

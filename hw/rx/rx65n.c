@@ -208,6 +208,16 @@ static void register_cmt(RX65NState *s, int unit)
     sysbus_mmio_map(cmt, 0, RX65N_CMT_BASE + unit * 0x10);
 }
 
+static void register_crc(RX65NState *s)
+{
+    SysBusDevice *crc;
+
+    object_initialize_child(OBJECT(s), "crc", &s->crc, TYPE_RENESAS_RX_CRC);
+    crc = SYS_BUS_DEVICE(&s->crc);
+    sysbus_realize(crc, &error_abort);
+    sysbus_mmio_map(crc, 0, RX65N_CRC_BASE);
+}
+
 static void register_sci(RX65NState *s, int unit)
 {
     SysBusDevice *sci;
@@ -530,6 +540,7 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_tmr(s, 1);
     register_cmt(s, 0);
     register_cmt(s, 1);
+    register_crc(s);
     for (int i = 0; i < RX65N_NR_SCI; i++) {
         register_sci(s, i);
     }
