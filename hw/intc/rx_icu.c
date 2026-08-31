@@ -75,9 +75,23 @@ static void set_irq(RXICUState *icu, int n_IRQ, int req)
     }
 }
 
+/*
+ * Priority of a vector. An ipr-map entry that does not name a real IPR
+ * register -- 0xff is used for vectors that have none -- must not be used to
+ * index the array: the map is a device property and nothing validates it, so
+ * an out of range entry would read past the end. Such a vector has no
+ * priority, which leaves it permanently masked.
+ */
+static uint8_t rxicu_ipr(RXICUState *icu, unsigned n)
+{
+    uint8_t idx = icu->map[n];
+
+    return idx < ARRAY_SIZE(icu->ipr) ? icu->ipr[idx] : 0;
+}
+
 static uint16_t rxicu_level(RXICUState *icu, unsigned n)
 {
-    return (icu->ipr[icu->map[n]] << 8) | n;
+    return (rxicu_ipr(icu, n) << 8) | n;
 }
 
 static void rxicu_request(RXICUState *icu, int n_IRQ)
@@ -161,9 +175,9 @@ static void rxicu_ack_irq(void *opaque, int no, int level)
     n_IRQ = -1;
     for (i = 0; i < NR_IRQS; i++) {
         if (icu->ir[i]) {
-            if (max_pri < icu->ipr[icu->map[i]]) {
+            if (max_pri < rxicu_ipr(icu, i)) {
                 n_IRQ = i;
-                max_pri = icu->ipr[icu->map[i]];
+                max_pri = rxicu_ipr(icu, i);
             }
         }
     }
@@ -198,9 +212,9 @@ static void rxicu_reeval(RXICUState *icu)
     }
     for (i = 1; i < NR_IRQS; i++) {
         if (icu->ir[i] && (icu->ier[i / 8] & (1 << (i & 7))) &&
-            max_pri < icu->ipr[icu->map[i]]) {
+            max_pri < rxicu_ipr(icu, i)) {
             n_IRQ = i;
-            max_pri = icu->ipr[icu->map[i]];
+            max_pri = rxicu_ipr(icu, i);
         }
     }
     if (n_IRQ >= 0) {
