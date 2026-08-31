@@ -32,6 +32,37 @@ def make_image(code):
     return bytes(blob)
 
 
+def make_ofsm(bankmd, bankswp):
+    """
+    Build an option-setting memory image. Unwritten OFSM reads as all ones,
+    which is BANKMD = 111b (linear mode) and BANKSWP = 111b.
+    """
+    blob = bytearray(b'\xff' * 512)
+    struct.pack_into('<I', blob, 0x00, 0xfffffff8 | bankmd)   # MDE
+    struct.pack_into('<I', blob, 0x20, 0xfffffff8 | bankswp)  # BANKSEL
+    return bytes(blob)
+
+
+def make_bank_half(marker):
+    """
+    A 1 MB code flash half whose firmware loads a distinctive marker into R1,
+    and whose own reset vector points at the low half of the address map. Which
+    marker turns up therefore says which bank got mapped low.
+    """
+    code = bytes([0xFB, 0x12]) + u32(marker) + bytes([0x2E, 0x00])
+    blob = bytearray(b'\xff' * (1024 * 1024))
+    blob[0:len(code)] = code
+    struct.pack_into('<I', blob, 1024 * 1024 - 4, 0xFFE00000)
+    return bytes(blob)
+
+
+def last_cpu_state(log):
+    """Return the last CPU register dump from a -d cpu log."""
+    parts = re.split(r'^pc=', log, flags=re.M)
+    assert len(parts) > 1, 'no CPU state dump in log'
+    return 'pc=' + parts[-1]
+
+
 class RXFcuMachine(QemuSystemTest):
 
     timeout = 30
@@ -209,6 +240,71 @@ class RXFcuMachine(QemuSystemTest):
             self.assertIn('r4=0xffffffff', self.final_state(log))
         finally:
             os.unlink(cflash)
+
+
+
+class RXDualBankMachine(QemuSystemTest):
+    """
+    Dual mode splits the 2 MB code flash into two 1 MB banks whose position
+    in the address map is chosen by BANKSEL.BANKSWP, sampled at reset. That
+    is what lets an update program the inactive bank and reboot into it.
+    """
+
+    timeout = 30
+
+    def run_banked(self, ofsm_bankmd, ofsm_bankswp):
+        cflash = make_bank_half(0x11111111) + make_bank_half(0xB0B0B0B0)
+        with tempfile.NamedTemporaryFile(suffix='.img', delete=False) as f:
+            f.write(cflash)
+            cf = f.name
+        with tempfile.NamedTemporaryFile(suffix='.img', delete=False) as f:
+            f.write(make_ofsm(ofsm_bankmd, ofsm_bankswp))
+            of = f.name
+        try:
+            cmd = [self.qemu_bin, '-machine', 'rsk-rx65n-2mb', '-nographic',
+                   '-d', 'cpu',
+                   '-drive', 'if=pflash,unit=0,format=raw,file=%s' % cf,
+                   '-drive', 'if=pflash,unit=2,format=raw,file=%s' % of]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, timeout=10,
+                                      text=True, errors='replace')
+                return proc.stdout + proc.stderr
+            except subprocess.TimeoutExpired as exc:
+                out = exc.stdout or ''
+                err = exc.stderr or ''
+                if isinstance(out, bytes):
+                    out = out.decode(errors='replace')
+                if isinstance(err, bytes):
+                    err = err.decode(errors='replace')
+                return out + err
+        finally:
+            os.unlink(cf)
+            os.unlink(of)
+
+    def test_linear_mode(self):
+        """BANKMD = 111b leaves the array flat: the low half stays low."""
+        self.set_machine('rsk-rx65n-2mb')
+        state = last_cpu_state(self.run_banked(0x7, 0x7))
+        self.assertIn('r1=0x11111111', state)
+
+    def test_dual_mode_unswapped(self):
+        """
+        BANKMD = 000b with BANKSWP = 111b keeps bank 0 in the upper half,
+        which is the layout a linearly programmed image already has, so the
+        result matches linear mode.
+        """
+        self.set_machine('rsk-rx65n-2mb')
+        state = last_cpu_state(self.run_banked(0x0, 0x7))
+        self.assertIn('r1=0x11111111', state)
+
+    def test_dual_mode_swapped(self):
+        """
+        BANKSWP = 000b exchanges the banks, so the same address now runs the
+        other bank's image.
+        """
+        self.set_machine('rsk-rx65n-2mb')
+        state = last_cpu_state(self.run_banked(0x0, 0x0))
+        self.assertIn('r1=0xb0b0b0b0', state)
 
 
 if __name__ == '__main__':

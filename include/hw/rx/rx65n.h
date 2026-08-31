@@ -94,6 +94,9 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_RSPI0_BASE    0x000D0100
 #define RX65N_ETHERC_BASE   0x000C0000
 /* Flash Control Unit FACI register block (HW manual section 6) */
+/* Option-setting memory (OFSM), holding MDE and BANKSEL */
+#define RX65N_OFSM_BASE     0xFE7F5D00
+
 #define RX65N_FCU_BASE      0x007FE000
 /* I/O ports (PORTn) and Multi-Function Pin Controller (MPC) */
 #define RX65N_GPIO_BASE     0x0008C000

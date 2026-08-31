@@ -44,6 +44,7 @@
 #include "system/block-backend.h"
 #include "hw/block/block.h"
 #include "qemu/error-report.h"
+#include "qemu/units.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 
@@ -535,9 +536,61 @@ static const MemoryRegionOps fcu_regs_ops = {
     },
 };
 
+/*
+ * Latch the code flash bank layout from the option-setting memory. The
+ * hardware samples MDE.BANKMD and BANKSEL.BANKSWP at reset, so a mode or
+ * bank switch only takes effect on the next reset, which is what makes the
+ * "program the other bank then reboot into it" update flow work.
+ *
+ * BANKSWP = 111b maps bank 0, the one holding the vectors, into the upper
+ * half, which is the layout a linearly programmed image already has, so it
+ * needs no aliasing. 000b swaps the halves.
+ */
+void rx_fcu_update_bank_map(RenesasRxFcuState *s)
+{
+    uint32_t mde, banksel;
+    bool dual, swapped;
+
+    mde = ldl_le_p(s->ofsm_ptr + RX_OFSM_MDE);
+    banksel = ldl_le_p(s->ofsm_ptr + RX_OFSM_BANKSEL);
+
+    dual = (mde & RX_BANKMD_MASK) == RX_BANKMD_DUAL;
+    swapped = (banksel & RX_BANKSWP_MASK) == RX_BANKSWP_SWAPPED;
+
+    /*
+     * Dual mode needs a code flash of at least 1.5 MB. Smaller parts do not
+     * offer it, and the 1.5 MB bank bases are not simply the halves of the
+     * linear range, so only the 2 MB layout is handled here.
+     */
+    if (dual && s->cflash_size < 2 * MiB) {
+        qemu_log_mask(LOG_UNIMP,
+                      "renesas-rx-fcu: dual mode requested on a %u KiB code "
+                      "flash is not modelled; staying linear\n",
+                      s->cflash_size / 1024);
+        dual = false;
+    }
+
+    s->dual_mode = dual;
+    s->bank_swapped = dual && swapped;
+
+    memory_region_transaction_begin();
+    memory_region_set_enabled(&s->cflash_linear, !s->bank_swapped);
+    memory_region_set_enabled(&s->cflash_bank[0], s->bank_swapped);
+    memory_region_set_enabled(&s->cflash_bank[1], s->bank_swapped);
+    if (s->bank_swapped) {
+        /* Lower half of the map shows bank 0, upper half shows bank 1. */
+        memory_region_set_alias_offset(&s->cflash_bank[0], s->cflash_size / 2);
+        memory_region_set_alias_offset(&s->cflash_bank[1], 0);
+    }
+    memory_region_transaction_commit();
+}
+
 static void rx_fcu_reset(DeviceState *dev)
 {
     RenesasRxFcuState *s = RENESAS_RX_FCU(dev);
+
+    /* The bank layout is sampled from the OFSM at every reset. */
+    rx_fcu_update_bank_map(s);
 
     /* Exit P/E mode and restore direct (romd) flash reads. */
     memory_region_rom_device_set_romd(&s->cflash_mr, true);
@@ -636,9 +689,42 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
                                        s->dflash_size, errp)) {
         return;
     }
+    /*
+     * The option-setting memory is read-only to ordinary accesses; it is
+     * only changed by the FACI configuration-set command, which is not
+     * modelled, so a plain ROM is the right shape for it.
+     */
+    if (!memory_region_init_rom(&s->ofsm_mr, OBJECT(s),
+                                "renesas-rx-fcu.ofsm",
+                                RX_FCU_OFSM_SIZE, errp)) {
+        return;
+    }
+
+    /*
+     * The code flash reaches the bus through a container holding either one
+     * alias over the whole array (linear mode) or one per bank (dual mode).
+     */
+    memory_region_init(&s->cflash_container, OBJECT(s),
+                       "renesas-rx-fcu.cflash-map", s->cflash_size);
+    memory_region_init_alias(&s->cflash_linear, OBJECT(s),
+                             "renesas-rx-fcu.cflash-linear",
+                             &s->cflash_mr, 0, s->cflash_size);
+    memory_region_add_subregion(&s->cflash_container, 0, &s->cflash_linear);
+
+    for (int i = 0; i < 2; i++) {
+        g_autofree char *name =
+            g_strdup_printf("renesas-rx-fcu.cflash-bank%d", i);
+        memory_region_init_alias(&s->cflash_bank[i], OBJECT(s), name,
+                                 &s->cflash_mr, 0, s->cflash_size / 2);
+        memory_region_add_subregion(&s->cflash_container,
+                                    (hwaddr)i * (s->cflash_size / 2),
+                                    &s->cflash_bank[i]);
+        memory_region_set_enabled(&s->cflash_bank[i], false);
+    }
 
     s->cflash_ptr = memory_region_get_ram_ptr(&s->cflash_mr);
     s->dflash_ptr = memory_region_get_ram_ptr(&s->dflash_mr);
+    s->ofsm_ptr = memory_region_get_ram_ptr(&s->ofsm_mr);
 
     /*
      * Erased flash reads as all ones, but the backing memory starts zeroed.
@@ -649,15 +735,42 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
      */
     memset(s->cflash_ptr, 0xff, s->cflash_size);
     memset(s->dflash_ptr, 0xff, s->dflash_size);
+    memset(s->ofsm_ptr, 0xff, RX_FCU_OFSM_SIZE);
 
     if (!fcu_attach_blk(s, dev, RX_FCU_CFLASH, errp) ||
         !fcu_attach_blk(s, dev, RX_FCU_DFLASH, errp)) {
         return;
     }
+    if (s->ofsm_blk) {
+        uint64_t perm;
+        int64_t len;
+
+        s->ofsm_ro = !blk_supports_write_perm(s->ofsm_blk);
+        perm = BLK_PERM_CONSISTENT_READ | (s->ofsm_ro ? 0 : BLK_PERM_WRITE);
+        if (blk_set_perm(s->ofsm_blk, perm, BLK_PERM_ALL, errp) < 0) {
+            return;
+        }
+        /*
+         * The OFSM is smaller than a block sector, so an exact size match is
+         * not something an image file can offer. Require enough bytes and
+         * read only the ones the region holds.
+         */
+        len = blk_getlength(s->ofsm_blk);
+        if (len < RX_FCU_OFSM_SIZE) {
+            error_setg(errp, "ofsm-drive is %" PRId64 " bytes, need at least %d",
+                       len, RX_FCU_OFSM_SIZE);
+            return;
+        }
+        if (blk_pread(s->ofsm_blk, 0, RX_FCU_OFSM_SIZE, s->ofsm_ptr, 0) < 0) {
+            error_setg(errp, "could not read ofsm-drive");
+            return;
+        }
+    }
 
     sysbus_init_mmio(sbd, &s->regs_mr);
-    sysbus_init_mmio(sbd, &s->cflash_mr);
+    sysbus_init_mmio(sbd, &s->cflash_container);
     sysbus_init_mmio(sbd, &s->dflash_mr);
+    sysbus_init_mmio(sbd, &s->ofsm_mr);
     sysbus_init_irq(sbd, &s->frdyi);
     sysbus_init_irq(sbd, &s->fiferr);
 }
@@ -665,6 +778,7 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
 static const Property rx_fcu_properties[] = {
     DEFINE_PROP_DRIVE("code-flash-drive", RenesasRxFcuState, cflash_blk),
     DEFINE_PROP_DRIVE("data-flash-drive", RenesasRxFcuState, dflash_blk),
+    DEFINE_PROP_DRIVE("ofsm-drive", RenesasRxFcuState, ofsm_blk),
     DEFINE_PROP_UINT32("code-flash-size", RenesasRxFcuState, cflash_size, 0),
     DEFINE_PROP_UINT32("data-flash-size", RenesasRxFcuState, dflash_size, 0),
     DEFINE_PROP_UINT32("code-flash-base", RenesasRxFcuState, cflash_base, 0),

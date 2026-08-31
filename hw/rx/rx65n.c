@@ -326,12 +326,16 @@ static void register_fcu(RX65NState *s, RX65NClass *rxc)
     qdev_prop_set_drive(DEVICE(fcu), "data-flash-drive",
                         drive_get(IF_PFLASH, 0, 1) ?
                         blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 1)) : NULL);
+    qdev_prop_set_drive(DEVICE(fcu), "ofsm-drive",
+                        drive_get(IF_PFLASH, 0, 2) ?
+                        blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 2)) : NULL);
     sysbus_realize(fcu, &error_abort);
 
     /* Region 0: FACI registers; region 1: code flash; region 2: data flash. */
     sysbus_mmio_map(fcu, RX_FCU_MMIO_REGS, RX65N_FCU_BASE);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_CFLASH, s->cflash_base);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_DFLASH, RX65N_DFLASH_BASE);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_OFSM, RX65N_OFSM_BASE);
 
     sysbus_connect_irq(fcu, RX_FCU_IRQ_FRDYI,
                        qdev_get_gpio_in(DEVICE(&s->icu), RX65N_FCU_FRDYI));
@@ -412,6 +416,13 @@ static void rx65n_reset_vector(void *opaque)
 {
     RX65NState *s = opaque;
     uint32_t vec;
+
+    /*
+     * Re-latch the code flash bank layout first: in dual mode the vector
+     * lives in whichever bank is mapped high, so reading it before the swap
+     * has been applied would fetch it from the wrong bank.
+     */
+    rx_fcu_update_bank_map(&s->fcu);
 
     if (rom_ptr(0xfffffffc, 4)) {
         return;     /* a ROM blob covers the vector; the CPU already has it */
