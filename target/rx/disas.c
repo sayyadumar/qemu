@@ -132,6 +132,10 @@ static const char cond[][4] = {
     "eq", "ne", "c", "nc", "gtu", "leu", "pz", "n",
     "ge", "lt", "gt", "le", "o", "no", "ra", "f"
 };
+static const char dcmp_cond[8][3] = {
+    "", "un", "eq", "", "lt", "", "le", ""
+};
+
 static const char psw[] = {
     'c', 'z', 's', 'o', 0, 0, 0, 0,
     'i', 'u', 0, 0, 0, 0, 0, 0,
@@ -1211,31 +1215,31 @@ static bool trans_UTOF(DisasContext *ctx, arg_UTOF *a)
 /* RXv2 DPFPU disassembly */
 static bool trans_DADD(DisasContext *ctx, arg_DADD *a)
 {
-    prt("dadd\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    prt("dadd\tdr%d, dr%d, dr%d", a->drs1, a->drs2, a->drd);
     return true;
 }
 
 static bool trans_DSUB(DisasContext *ctx, arg_DSUB *a)
 {
-    prt("dsub\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    prt("dsub\tdr%d, dr%d, dr%d", a->drs1, a->drs2, a->drd);
     return true;
 }
 
 static bool trans_DMUL(DisasContext *ctx, arg_DMUL *a)
 {
-    prt("dmul\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    prt("dmul\tdr%d, dr%d, dr%d", a->drs1, a->drs2, a->drd);
     return true;
 }
 
 static bool trans_DDIV(DisasContext *ctx, arg_DDIV *a)
 {
-    prt("ddiv\tdr%d, dr%d, dr%d", a->drs2, a->drd, a->drs1);
+    prt("ddiv\tdr%d, dr%d, dr%d", a->drs1, a->drs2, a->drd);
     return true;
 }
 
 static bool trans_DCMP(DisasContext *ctx, arg_DCMP *a)
 {
-    prt("dcmp\tdr%d, %d, dr%d", a->drs2, a->cd, a->drs1);
+    prt("dcmp%s\tdr%d, dr%d", dcmp_cond[a->cd & 7], a->drs1, a->drs2);
     return true;
 }
 
@@ -1271,19 +1275,19 @@ static bool trans_DROUND(DisasContext *ctx, arg_DROUND *a)
 
 static bool trans_DTOI(DisasContext *ctx, arg_DTOI *a)
 {
-    prt("dtoi\tdr%d, r%d", a->drs, a->rd);
+    prt("dtoi\tdr%d, dr%d", a->drs, a->drd);
     return true;
 }
 
 static bool trans_DTOU(DisasContext *ctx, arg_DTOU *a)
 {
-    prt("dtou\tdr%d, r%d", a->drs, a->rd);
+    prt("dtou\tdr%d, dr%d", a->drs, a->drd);
     return true;
 }
 
 static bool trans_DTOF(DisasContext *ctx, arg_DTOF *a)
 {
-    prt("dtof\tdr%d, r%d", a->drs, a->rd);
+    prt("dtof\tdr%d, dr%d", a->drs, a->drd);
     return true;
 }
 
@@ -1307,13 +1311,217 @@ static bool trans_FTOD(DisasContext *ctx, arg_FTOD *a)
 
 static bool trans_DPUSHM(DisasContext *ctx, arg_DPUSHM *a)
 {
-    prt("dpushm.d\tdr%d-dr%d", a->drd, a->drd + a->rnum - 1);
+    prt("dpushm.d\tdr%d-dr%d", a->drd, a->drd + a->rnum);
     return true;
 }
 
 static bool trans_DPOPM(DisasContext *ctx, arg_DPOPM *a)
 {
-    prt("dpopm.d\tdr%d-dr%d", a->drd, a->drd + a->rnum - 1);
+    prt("dpopm.d\tdr%d-dr%d", a->drd, a->drd + a->rnum);
+    return true;
+}
+
+/* RXv3 disassembly: remaining DPFPU, bit field and register bank ops */
+static const char dcrname[][6] = { "dpsw", "dcmr", "decnt", "depc" };
+
+static bool trans_DPUSHM_l(DisasContext *ctx, arg_DPUSHM_l *a)
+{
+    prt("dpushm.l\t%s-%s", dcrname[a->dcrd & 3],
+        dcrname[(a->dcrd + a->rnum) & 3]);
+    return true;
+}
+
+static bool trans_DPOPM_l(DisasContext *ctx, arg_DPOPM_l *a)
+{
+    prt("dpopm.l\t%s-%s", dcrname[a->dcrd & 3],
+        dcrname[(a->dcrd + a->rnum) & 3]);
+    return true;
+}
+
+static bool trans_DMOV_rdrl(DisasContext *ctx, arg_DMOV_rdrl *a)
+{
+    prt("dmov.l\tr%d, drl%d", a->rs, a->drd);
+    return true;
+}
+
+static bool trans_DMOV_rdrh(DisasContext *ctx, arg_DMOV_rdrh *a)
+{
+    prt("dmov.l\tr%d, drh%d", a->rs, a->drd);
+    return true;
+}
+
+static bool trans_DMOVD_rdrh(DisasContext *ctx, arg_DMOVD_rdrh *a)
+{
+    prt("dmov.d\tr%d, drh%d", a->rs, a->drd);
+    return true;
+}
+
+static bool trans_DMOV_drlr(DisasContext *ctx, arg_DMOV_drlr *a)
+{
+    prt("dmov.l\tdrl%d, r%d", a->drs, a->rd);
+    return true;
+}
+
+static bool trans_DMOV_drhr(DisasContext *ctx, arg_DMOV_drhr *a)
+{
+    prt("dmov.l\tdrh%d, r%d", a->drs, a->rd);
+    return true;
+}
+
+static bool trans_DMOVL_irl(DisasContext *ctx, arg_DMOVL_irl *a)
+{
+    uint32_t imm = li(ctx, 0);
+
+    prt("dmov.l\t#0x%08x, drl%d", imm, a->drd);
+    return true;
+}
+
+static bool trans_DMOVL_irh(DisasContext *ctx, arg_DMOVL_irh *a)
+{
+    uint32_t imm = li(ctx, 0);
+
+    prt("dmov.l\t#0x%08x, drh%d", imm, a->drd);
+    return true;
+}
+
+static bool trans_DMOVD_irh(DisasContext *ctx, arg_DMOVD_irh *a)
+{
+    uint32_t imm = li(ctx, 0);
+
+    prt("dmov.d\t#0x%08x, drh%d", imm, a->drd);
+    return true;
+}
+
+/* Fetch n more instruction bytes into the dump buffer and return them. */
+static uint32_t disas_fetch(DisasContext *ctx, int n)
+{
+    uint32_t addr = ctx->addr;
+    uintptr_t len = ctx->len;
+    uint32_t val = 0;
+    int i;
+
+    g_assert(len + n <= ARRAY_SIZE(ctx->bytes));
+    ctx->addr += n;
+    ctx->len += n;
+    ctx->dis->read_memory_func(addr, ctx->bytes + len, n, ctx->dis);
+    for (i = n - 1; i >= 0; i--) {
+        val = (val << 8) | ctx->bytes[len + i];
+    }
+    return val;
+}
+
+/*
+ * DMOV.D displacements are scaled by 4 (see the note in translate.c), which
+ * rx_index_addr() cannot express, so decode them here.
+ */
+static void dmov_index_addr(DisasContext *ctx, char out[8], int ld)
+{
+    if (ld == 0) {
+        out[0] = '\0';
+        return;
+    }
+    sprintf(out, "%u", disas_fetch(ctx, ld) << 2);
+}
+
+/* The DR operand of the DMOV.D memory forms sits in a trailing post-byte. */
+static int dmov_postbyte(DisasContext *ctx)
+{
+    return disas_fetch(ctx, 1) >> 4;
+}
+
+static bool trans_DMOV_mst(DisasContext *ctx, arg_DMOV_mst *a)
+{
+    char dsp[8];
+    int dr;
+
+    dmov_index_addr(ctx, dsp, a->ld);
+    dr = dmov_postbyte(ctx);
+    prt("dmov.d\tdr%d, %s[r%d]", dr, dsp, a->rd);
+    return true;
+}
+
+static bool trans_DMOV_mld(DisasContext *ctx, arg_DMOV_mld *a)
+{
+    char dsp[8];
+    int dr;
+
+    dmov_index_addr(ctx, dsp, a->ld);
+    dr = dmov_postbyte(ctx);
+    prt("dmov.d\t%s[r%d], dr%d", dsp, a->rs, dr);
+    return true;
+}
+
+static bool trans_MVFDC(DisasContext *ctx, arg_MVFDC *a)
+{
+    prt("mvfdc\t%s, r%d", dcrname[a->dcrs & 3], a->rd);
+    return true;
+}
+
+static bool trans_MVTDC(DisasContext *ctx, arg_MVTDC *a)
+{
+    prt("mvtdc\tr%d, %s", a->rs, dcrname[a->dcrd & 3]);
+    return true;
+}
+
+static bool trans_MVFDR(DisasContext *ctx, arg_MVFDR *a)
+{
+    prt("mvfdr");
+    return true;
+}
+
+static void prt_bfmov(DisasContext *ctx, const char *name, int rs, int rd)
+{
+    unsigned bf = disas_fetch(ctx, 2);
+    unsigned dlsb = (bf >> 5) & 0x1f;
+    unsigned msb = (bf >> 10) & 0x1f;
+    int delta = bf & 0x1f;
+
+    if (delta >= 0x10) {
+        delta -= 0x20;
+    }
+    prt("%s\t#%d, #%d, #%d, r%d, r%d", name,
+        (int)dlsb - delta, dlsb, (int)msb - (int)dlsb, rs, rd);
+}
+
+static bool trans_BFMOV(DisasContext *ctx, arg_BFMOV *a)
+{
+    prt_bfmov(ctx, "bfmov", a->rs, a->rd);
+    return true;
+}
+
+static bool trans_BFMOVZ(DisasContext *ctx, arg_BFMOVZ *a)
+{
+    prt_bfmov(ctx, "bfmovz", a->rs, a->rd);
+    return true;
+}
+
+static bool trans_SAVE_r(DisasContext *ctx, arg_SAVE_r *a)
+{
+    prt("save\tr%d", a->rs);
+    return true;
+}
+
+static bool trans_SAVE_i(DisasContext *ctx, arg_SAVE_i *a)
+{
+    prt("save\t#%d", a->imm);
+    return true;
+}
+
+static bool trans_RSTR_r(DisasContext *ctx, arg_RSTR_r *a)
+{
+    prt("rstr\tr%d", a->rs);
+    return true;
+}
+
+static bool trans_RSTR_i(DisasContext *ctx, arg_RSTR_i *a)
+{
+    prt("rstr\t#%d", a->imm);
+    return true;
+}
+
+static bool trans_XOR_rrr(DisasContext *ctx, arg_XOR_rrr *a)
+{
+    prt("xor\tr%d, r%d, r%d", a->rs, a->rs2, a->rd);
     return true;
 }
 

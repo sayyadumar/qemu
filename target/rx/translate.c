@@ -37,7 +37,19 @@ typedef struct DisasContext {
     CPURXState *env;
     uint32_t pc;
     uint32_t tb_flags;
+    RXISAVersion isa_version;
 } DisasContext;
+
+/*
+ * Instructions introduced after RXv1 are only valid on CPU models that
+ * implement the corresponding revision. Returning false from a trans_
+ * handler makes decode() fail, which raises an illegal instruction
+ * exception exactly as an unknown encoding would.
+ */
+static bool require_isa(DisasContext *ctx, RXISAVersion version)
+{
+    return ctx->isa_version >= version;
+}
 
 typedef struct DisasCompare {
     TCGv value;
@@ -69,6 +81,9 @@ static TCGv cpu_psw_i, cpu_psw_pm, cpu_psw_u, cpu_psw_ipl;
 static TCGv cpu_usp, cpu_fpsw, cpu_bpsw, cpu_bpc, cpu_isp;
 static TCGv cpu_fintv, cpu_intb, cpu_pc;
 static TCGv_i64 cpu_acc;
+/* RXv3 DPFPU state */
+static TCGv_i64 cpu_dregs[NUM_DREGS];
+static TCGv cpu_dcregs[NUM_DCREGS];
 
 #define cpu_sp cpu_regs[0]
 
@@ -144,6 +159,15 @@ void rx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
         qemu_fprintf(f, "r%d=0x%08x r%d=0x%08x r%d=0x%08x r%d=0x%08x\n",
                      i, env->regs[i], i + 1, env->regs[i + 1],
                      i + 2, env->regs[i + 2], i + 3, env->regs[i + 3]);
+    }
+    if (RX_CPU_GET_CLASS(cs)->isa_version >= RX_ISA_V3) {
+        for (i = 0; i < NUM_DREGS; i += 2) {
+            qemu_fprintf(f, "dr%d=0x%016" PRIx64 " dr%d=0x%016" PRIx64 "\n",
+                         i, env->dr[i], i + 1, env->dr[i + 1]);
+        }
+        qemu_fprintf(f, "dpsw=0x%08x dcmr=0x%08x decnt=0x%08x depc=0x%08x\n",
+                     env->dcr[RX_DCR_DPSW], env->dcr[RX_DCR_DCMR],
+                     env->dcr[RX_DCR_DECNT], env->dcr[RX_DCR_DEPC]);
     }
 }
 
@@ -737,6 +761,9 @@ static inline void stcond(TCGCond cond, int rd, int imm)
 /* stz #imm,rd */
 static bool trans_STZ(DisasContext *ctx, arg_STZ *a)
 {
+    if (!require_isa(ctx, RX_ISA_V2)) {
+        return false;
+    }
     stcond(TCG_COND_EQ, a->rd, a->imm);
     return true;
 }
@@ -744,6 +771,9 @@ static bool trans_STZ(DisasContext *ctx, arg_STZ *a)
 /* stnz #imm,rd */
 static bool trans_STNZ(DisasContext *ctx, arg_STNZ *a)
 {
+    if (!require_isa(ctx, RX_ISA_V2)) {
+        return false;
+    }
     stcond(TCG_COND_NE, a->rd, a->imm);
     return true;
 }
@@ -1846,10 +1876,13 @@ static bool trans_SATR(DisasContext *ctx, arg_SATR *a)
         return true;                                                    \
     }
 
-#define FCONVOP(name, op)                                       \
+#define FCONVOP(name, op, isa)                                  \
     static bool trans_##name(DisasContext *ctx, arg_##name * a) \
     {                                                           \
         TCGv val, mem;                                          \
+        if (!require_isa(ctx, isa)) {                           \
+            return false;                                       \
+        }                                                       \
         mem = tcg_temp_new();                                   \
         val = rx_load_source(ctx, mem, a->ld, MO_32, a->rs);    \
         gen_helper_##op(cpu_regs[a->rd], tcg_env, val);         \
@@ -1880,9 +1913,9 @@ static bool trans_FCMP_mr(DisasContext *ctx, arg_FCMP_mr *a)
     return true;
 }
 
-FCONVOP(FTOI, ftoi)
-FCONVOP(FTOU, ftou)
-FCONVOP(ROUND, round)
+FCONVOP(FTOI, ftoi, RX_ISA_V1)
+FCONVOP(FTOU, ftou, RX_ISA_V2)
+FCONVOP(ROUND, round, RX_ISA_V1)
 
 /* itof rs, rd */
 /* itof dsp[rs], rd */
@@ -1899,32 +1932,51 @@ static bool trans_ITOF(DisasContext *ctx, arg_ITOF * a)
 static bool trans_UTOF(DisasContext *ctx, arg_UTOF * a)
 {
     TCGv val, mem;
+    if (!require_isa(ctx, RX_ISA_V2)) {
+        return false;
+    }
     mem = tcg_temp_new();
     val = rx_load_source(ctx, mem, a->ld, a->mi, a->rs);
     gen_helper_utof(cpu_regs[a->rd], tcg_env, val);
     return true;
 }
 
-/* RXv2 DPFPU helpers: DR register compose/decompose.
- * DRn is a virtual 64-bit register backed by two GPRs:
- *   R[2n]   = low 32 bits
- *   R[2n+1] = high 32 bits
+/*
+ * RXv3 DPFPU register access. DR0-DR15 are dedicated 64-bit registers,
+ * architecturally distinct from the general purpose registers; DRHn and
+ * DRLn name the high and low 32-bit halves of DRn.
  */
 static TCGv_i64 dr_read(int n)
 {
-    TCGv_i64 ret = tcg_temp_new_i64();
-    tcg_gen_concat_i32_i64(ret, cpu_regs[n * 2], cpu_regs[n * 2 + 1]);
-    return ret;
+    return cpu_dregs[n];
 }
 
 static void dr_write(int n, TCGv_i64 val)
 {
-    tcg_gen_extr_i64_i32(cpu_regs[n * 2], cpu_regs[n * 2 + 1], val);
+    tcg_gen_mov_i64(cpu_dregs[n], val);
+}
+
+/* Write val into the high or low 32-bit half of DRn, preserving the other. */
+static void drh_write(int n, TCGv val)
+{
+    TCGv_i64 t = tcg_temp_new_i64();
+    tcg_gen_extu_i32_i64(t, val);
+    tcg_gen_deposit_i64(cpu_dregs[n], cpu_dregs[n], t, 32, 32);
+}
+
+static void drl_write(int n, TCGv val)
+{
+    TCGv_i64 t = tcg_temp_new_i64();
+    tcg_gen_extu_i32_i64(t, val);
+    tcg_gen_deposit_i64(cpu_dregs[n], cpu_dregs[n], t, 0, 32);
 }
 
 /* dadd DRdrs1, DRdrd, DRdrs2  (DRdrd = DRdrs1 + DRdrs2) */
 static bool trans_DADD(DisasContext *ctx, arg_DADD *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s1 = dr_read(a->drs1);
     TCGv_i64 s2 = dr_read(a->drs2);
     TCGv_i64 d  = tcg_temp_new_i64();
@@ -1935,6 +1987,9 @@ static bool trans_DADD(DisasContext *ctx, arg_DADD *a)
 
 static bool trans_DSUB(DisasContext *ctx, arg_DSUB *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s1 = dr_read(a->drs1);
     TCGv_i64 s2 = dr_read(a->drs2);
     TCGv_i64 d  = tcg_temp_new_i64();
@@ -1945,6 +2000,9 @@ static bool trans_DSUB(DisasContext *ctx, arg_DSUB *a)
 
 static bool trans_DMUL(DisasContext *ctx, arg_DMUL *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s1 = dr_read(a->drs1);
     TCGv_i64 s2 = dr_read(a->drs2);
     TCGv_i64 d  = tcg_temp_new_i64();
@@ -1955,6 +2013,9 @@ static bool trans_DMUL(DisasContext *ctx, arg_DMUL *a)
 
 static bool trans_DDIV(DisasContext *ctx, arg_DDIV *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s1 = dr_read(a->drs1);
     TCGv_i64 s2 = dr_read(a->drs2);
     TCGv_i64 d  = tcg_temp_new_i64();
@@ -1965,14 +2026,19 @@ static bool trans_DDIV(DisasContext *ctx, arg_DDIV *a)
 
 static bool trans_DCMP(DisasContext *ctx, arg_DCMP *a)
 {
-    TCGv_i64 s1 = dr_read(a->drs1);
-    TCGv_i64 s2 = dr_read(a->drs2);
-    gen_helper_dcmp(tcg_env, s1, s2);
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    gen_helper_dcmp(tcg_env, tcg_constant_i32(a->cd),
+                    cpu_dregs[a->drs1], cpu_dregs[a->drs2]);
     return true;
 }
 
 static bool trans_DMOV(DisasContext *ctx, arg_DMOV *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s = dr_read(a->drs);
     dr_write(a->drd, s);
     return true;
@@ -1980,6 +2046,9 @@ static bool trans_DMOV(DisasContext *ctx, arg_DMOV *a)
 
 static bool trans_DABS(DisasContext *ctx, arg_DABS *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s = dr_read(a->drs);
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_dabs(d, tcg_env, s);
@@ -1989,6 +2058,9 @@ static bool trans_DABS(DisasContext *ctx, arg_DABS *a)
 
 static bool trans_DNEG(DisasContext *ctx, arg_DNEG *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s = dr_read(a->drs);
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_dneg(d, tcg_env, s);
@@ -1998,6 +2070,9 @@ static bool trans_DNEG(DisasContext *ctx, arg_DNEG *a)
 
 static bool trans_DSQRT(DisasContext *ctx, arg_DSQRT *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s = dr_read(a->drs);
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_dsqrt(d, tcg_env, s);
@@ -2007,6 +2082,9 @@ static bool trans_DSQRT(DisasContext *ctx, arg_DSQRT *a)
 
 static bool trans_DROUND(DisasContext *ctx, arg_DROUND *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 s = dr_read(a->drs);
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_dround(d, tcg_env, s);
@@ -2014,33 +2092,66 @@ static bool trans_DROUND(DisasContext *ctx, arg_DROUND *a)
     return true;
 }
 
-/* dtoi DRdrs, rd -- convert double to signed int32 */
+/*
+ * dtoi / dtou / dtof convert within the DPFPU: the 32-bit result is written
+ * to the low half of the destination DR register, from where DMOV.L moves it
+ * out to a GPR. The high half is cleared.
+ */
+static void dr_write_low32(int n, TCGv val)
+{
+    TCGv_i64 t = tcg_temp_new_i64();
+    tcg_gen_extu_i32_i64(t, val);
+    tcg_gen_mov_i64(cpu_dregs[n], t);
+}
+
+/* dtoi DRdrs, DRdrd -- convert double to signed int32 */
 static bool trans_DTOI(DisasContext *ctx, arg_DTOI *a)
 {
-    TCGv_i64 s = dr_read(a->drs);
-    gen_helper_dtoi(cpu_regs[a->rd], tcg_env, s);
+    TCGv res;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    res = tcg_temp_new();
+    gen_helper_dtoi(res, tcg_env, dr_read(a->drs));
+    dr_write_low32(a->drd, res);
     return true;
 }
 
-/* dtou DRdrs, rd -- convert double to unsigned int32 */
+/* dtou DRdrs, DRdrd -- convert double to unsigned int32 */
 static bool trans_DTOU(DisasContext *ctx, arg_DTOU *a)
 {
-    TCGv_i64 s = dr_read(a->drs);
-    gen_helper_dtou(cpu_regs[a->rd], tcg_env, s);
+    TCGv res;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    res = tcg_temp_new();
+    gen_helper_dtou(res, tcg_env, dr_read(a->drs));
+    dr_write_low32(a->drd, res);
     return true;
 }
 
-/* dtof DRdrs, rd -- convert double to float32 */
+/* dtof DRdrs, DRdrd -- convert double to float32 */
 static bool trans_DTOF(DisasContext *ctx, arg_DTOF *a)
 {
-    TCGv_i64 s = dr_read(a->drs);
-    gen_helper_dtof(cpu_regs[a->rd], tcg_env, s);
+    TCGv res;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    res = tcg_temp_new();
+    gen_helper_dtof(res, tcg_env, dr_read(a->drs));
+    dr_write_low32(a->drd, res);
     return true;
 }
 
 /* itod rs, DRdrd -- convert signed int32 to double */
 static bool trans_ITOD(DisasContext *ctx, arg_ITOD *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_itod(d, tcg_env, cpu_regs[a->rs]);
     dr_write(a->drd, d);
@@ -2050,6 +2161,9 @@ static bool trans_ITOD(DisasContext *ctx, arg_ITOD *a)
 /* utod rs, DRdrd -- convert unsigned int32 to double */
 static bool trans_UTOD(DisasContext *ctx, arg_UTOD *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_utod(d, tcg_env, cpu_regs[a->rs]);
     dr_write(a->drd, d);
@@ -2059,21 +2173,32 @@ static bool trans_UTOD(DisasContext *ctx, arg_UTOD *a)
 /* ftod rs, DRdrd -- convert float32 to double */
 static bool trans_FTOD(DisasContext *ctx, arg_FTOD *a)
 {
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
     TCGv_i64 d = tcg_temp_new_i64();
     gen_helper_ftod(d, tcg_env, cpu_regs[a->rs]);
     dr_write(a->drd, d);
     return true;
 }
 
-/* dpushm.d DRdrd, rnum -- push rnum DR registers starting from DRdrd */
+/*
+ * dpushm.d DRn-DRm / dpopm.d DRn-DRm.
+ * The encoded rnum field holds (last - first), so the range covers
+ * rnum + 1 registers. Pushes run from the highest register down so that
+ * the lowest-numbered register ends up at the lowest address.
+ */
 static bool trans_DPUSHM(DisasContext *ctx, arg_DPUSHM *a)
 {
-    int i, n = a->drd + a->rnum;
-    for (i = n - 1; i >= a->drd; i--) {
-        TCGv_i64 dr = dr_read(i);
+    int i;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    for (i = a->drd + a->rnum; i >= a->drd; i--) {
         TCGv_i32 hi = tcg_temp_new_i32();
         TCGv_i32 lo = tcg_temp_new_i32();
-        tcg_gen_extr_i64_i32(lo, hi, dr);
+        tcg_gen_extr_i64_i32(lo, hi, cpu_dregs[i & (NUM_DREGS - 1)]);
         tcg_gen_subi_i32(cpu_sp, cpu_sp, 4);
         rx_gen_st(MO_32, hi, cpu_sp);
         tcg_gen_subi_i32(cpu_sp, cpu_sp, 4);
@@ -2082,11 +2207,14 @@ static bool trans_DPUSHM(DisasContext *ctx, arg_DPUSHM *a)
     return true;
 }
 
-/* dpopm.d DRdrd, rnum -- pop rnum DR registers starting from DRdrd */
 static bool trans_DPOPM(DisasContext *ctx, arg_DPOPM *a)
 {
     int i;
-    for (i = a->drd; i < a->drd + a->rnum; i++) {
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    for (i = a->drd; i <= a->drd + a->rnum; i++) {
         TCGv_i64 dr = tcg_temp_new_i64();
         TCGv_i32 hi = tcg_temp_new_i32();
         TCGv_i32 lo = tcg_temp_new_i32();
@@ -2095,8 +2223,325 @@ static bool trans_DPOPM(DisasContext *ctx, arg_DPOPM *a)
         rx_gen_ld(MO_32, hi, cpu_sp);
         tcg_gen_addi_i32(cpu_sp, cpu_sp, 4);
         tcg_gen_concat_i32_i64(dr, lo, hi);
-        dr_write(i, dr);
+        tcg_gen_mov_i64(cpu_dregs[i & (NUM_DREGS - 1)], dr);
     }
+    return true;
+}
+
+/* dpushm.l DCRn-DCRm / dpopm.l DCRn-DCRm (DPFPU control registers) */
+static bool trans_DPUSHM_l(DisasContext *ctx, arg_DPUSHM_l *a)
+{
+    int i;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    for (i = a->dcrd + a->rnum; i >= a->dcrd; i--) {
+        tcg_gen_subi_i32(cpu_sp, cpu_sp, 4);
+        rx_gen_st(MO_32, cpu_dcregs[i & (NUM_DCREGS - 1)], cpu_sp);
+    }
+    return true;
+}
+
+static bool trans_DPOPM_l(DisasContext *ctx, arg_DPOPM_l *a)
+{
+    int i;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    for (i = a->dcrd; i <= a->dcrd + a->rnum; i++) {
+        rx_gen_ld(MO_32, cpu_dcregs[i & (NUM_DCREGS - 1)], cpu_sp);
+        tcg_gen_addi_i32(cpu_sp, cpu_sp, 4);
+    }
+    return true;
+}
+
+/* dmov.l rs, DRLd  -- write the low half of DRd, preserving the high half */
+static bool trans_DMOV_rdrl(DisasContext *ctx, arg_DMOV_rdrl *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    drl_write(a->drd, cpu_regs[a->rs]);
+    return true;
+}
+
+/* dmov.l rs, DRHd -- write the high half of DRd, preserving the low half */
+static bool trans_DMOV_rdrh(DisasContext *ctx, arg_DMOV_rdrh *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    drh_write(a->drd, cpu_regs[a->rs]);
+    return true;
+}
+
+/*
+ * dmov.d rs, DRHd -- write the high half of DRd and clear the low half.
+ * This is the single-instruction way to materialise a double whose low
+ * word is zero, which covers the common literals (1.0, 0.5, 2.0, ...).
+ */
+static bool trans_DMOVD_rdrh(DisasContext *ctx, arg_DMOVD_rdrh *a)
+{
+    TCGv_i64 t;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    t = tcg_temp_new_i64();
+    tcg_gen_extu_i32_i64(t, cpu_regs[a->rs]);
+    tcg_gen_shli_i64(cpu_dregs[a->drd], t, 32);
+    return true;
+}
+
+/* dmov.l DRLs, rd */
+static bool trans_DMOV_drlr(DisasContext *ctx, arg_DMOV_drlr *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    tcg_gen_extrl_i64_i32(cpu_regs[a->rd], cpu_dregs[a->drs]);
+    return true;
+}
+
+/* dmov.l DRHs, rd */
+static bool trans_DMOV_drhr(DisasContext *ctx, arg_DMOV_drhr *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    tcg_gen_extrh_i64_i32(cpu_regs[a->rd], cpu_dregs[a->drs]);
+    return true;
+}
+
+/* dmov.l #imm32, DRLd */
+static bool trans_DMOVL_irl(DisasContext *ctx, arg_DMOVL_irl *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    drl_write(a->drd, tcg_constant_i32(li(ctx, 0)));
+    return true;
+}
+
+/* dmov.l #imm32, DRHd */
+static bool trans_DMOVL_irh(DisasContext *ctx, arg_DMOVL_irh *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    drh_write(a->drd, tcg_constant_i32(li(ctx, 0)));
+    return true;
+}
+
+/* dmov.d #imm32, DRHd -- set the high half, clear the low half */
+static bool trans_DMOVD_irh(DisasContext *ctx, arg_DMOVD_irh *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    tcg_gen_movi_i64(cpu_dregs[a->drd], (uint64_t)li(ctx, 0) << 32);
+    return true;
+}
+
+/*
+ * The DMOV.D memory forms name their DR operand in a post-byte that follows
+ * the displacement, so it can only be read once rx_index_addr() has consumed
+ * the displacement bytes.
+ *
+ * Per the RXv3 ISA manual the .D displacement is scaled by 4, not by the
+ * 8-byte transfer size: dsp:8 reaches 1020 (255 * 4) and dsp:16 reaches
+ * 262140 (65535 * 4). Note that binutils gas disagrees, scaling by 8 and
+ * requiring 8-byte alignment; the manual is taken as authoritative here.
+ */
+#define DMOV_DSP_SHIFT 2
+static int dmov_postbyte_dr(DisasContext *ctx)
+{
+    uint8_t b = translator_ldub(ctx->env, &ctx->base, ctx->base.pc_next);
+    ctx->base.pc_next += 1;
+    return b >> 4;
+}
+
+/* dmov.d DRs, dsp[rd] */
+static bool trans_DMOV_mst(DisasContext *ctx, arg_DMOV_mst *a)
+{
+    TCGv mem, addr;
+    int drs;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    mem = tcg_temp_new();
+    addr = rx_index_addr(ctx, mem, a->ld, DMOV_DSP_SHIFT, a->rd);
+    drs = dmov_postbyte_dr(ctx);
+    tcg_gen_qemu_st_i64(cpu_dregs[drs], addr, 0, MO_TEUQ);
+    return true;
+}
+
+/* dmov.d dsp[rs], DRd */
+static bool trans_DMOV_mld(DisasContext *ctx, arg_DMOV_mld *a)
+{
+    TCGv mem, addr;
+    int drd;
+
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    mem = tcg_temp_new();
+    addr = rx_index_addr(ctx, mem, a->ld, DMOV_DSP_SHIFT, a->rs);
+    drd = dmov_postbyte_dr(ctx);
+    tcg_gen_qemu_ld_i64(cpu_dregs[drd], addr, 0, MO_TEUQ);
+    return true;
+}
+
+/* mvfdc DCRs, rd */
+static bool trans_MVFDC(DisasContext *ctx, arg_MVFDC *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    tcg_gen_mov_i32(cpu_regs[a->rd], cpu_dcregs[a->dcrs]);
+    return true;
+}
+
+/* mvtdc rs, DCRd -- see helper_mvtdc for the per-register write rules */
+static bool trans_MVTDC(DisasContext *ctx, arg_MVTDC *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    gen_helper_mvtdc(tcg_env, tcg_constant_i32(a->dcrd), cpu_regs[a->rs]);
+    return true;
+}
+
+/*
+ * mvfdr -- Z = DCMR.RES. Moves the result of the last DCMP into the PSW Z
+ * flag so it can be branched on; no other flag and no DPSW bit changes.
+ *
+ * psw_z holds the inverse of the architectural Z flag (Z is set when psw_z
+ * reads zero), so the RES bit is inverted on the way in.
+ */
+static bool trans_MVFDR(DisasContext *ctx, arg_MVFDR *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    tcg_gen_extract_i32(cpu_psw_z, cpu_dcregs[RX_DCR_DCMR],
+                        RX_DCMR_RES_BIT, 1);
+    tcg_gen_xori_i32(cpu_psw_z, cpu_psw_z, 1);
+    return true;
+}
+
+/*
+ * bfmov / bfmovz. The 16-bit field descriptor that follows the opcode packs
+ *   bits  4:0  (dlsb - slsb), as a signed 5-bit value
+ *   bits  9:5  dlsb
+ *   bits 14:10 dlsb + width
+ * BFMOV leaves the bits outside the destination field untouched; BFMOVZ
+ * clears them.
+ */
+static bool bfmov_common(DisasContext *ctx, int rd, int rs, bool zero)
+{
+    unsigned bf, dlsb, msb, width;
+    int delta, slsb;
+    TCGv tmp;
+
+    bf = translator_lduw(ctx->env, &ctx->base, ctx->base.pc_next);
+    ctx->base.pc_next += 2;
+
+    dlsb = (bf >> 5) & 0x1f;
+    msb = (bf >> 10) & 0x1f;
+    delta = bf & 0x1f;
+    if (delta >= 0x10) {
+        delta -= 0x20;
+    }
+    slsb = dlsb - delta;
+
+    if (msb <= dlsb || slsb < 0 || slsb > 31) {
+        /* Empty or out-of-range field: architecturally undefined. */
+        return false;
+    }
+    width = msb - dlsb;
+    if (slsb + width > 32) {
+        width = 32 - slsb;
+    }
+
+    tmp = tcg_temp_new();
+    tcg_gen_extract_i32(tmp, cpu_regs[rs], slsb, width);
+    if (zero) {
+        tcg_gen_shli_i32(cpu_regs[rd], tmp, dlsb);
+    } else {
+        tcg_gen_deposit_i32(cpu_regs[rd], cpu_regs[rd], tmp, dlsb, width);
+    }
+    return true;
+}
+
+static bool trans_BFMOV(DisasContext *ctx, arg_BFMOV *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    return bfmov_common(ctx, a->rd, a->rs, false);
+}
+
+static bool trans_BFMOVZ(DisasContext *ctx, arg_BFMOVZ *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    return bfmov_common(ctx, a->rd, a->rs, true);
+}
+
+/*
+ * save / rstr -- the RXv3 register bank save function. A bank holds R1-R15,
+ * the USP, the FPSW and the accumulator; the banks are internal CPU state
+ * that nothing but these two instructions can reach, so no memory traffic
+ * is involved.
+ */
+static bool trans_SAVE_i(DisasContext *ctx, arg_SAVE_i *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    gen_helper_save(tcg_env, tcg_constant_i32(a->imm));
+    return true;
+}
+
+static bool trans_SAVE_r(DisasContext *ctx, arg_SAVE_r *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    gen_helper_save(tcg_env, cpu_regs[a->rs]);
+    return true;
+}
+
+static bool trans_RSTR_i(DisasContext *ctx, arg_RSTR_i *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    gen_helper_rstr(tcg_env, tcg_constant_i32(a->imm));
+    return true;
+}
+
+static bool trans_RSTR_r(DisasContext *ctx, arg_RSTR_r *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    gen_helper_rstr(tcg_env, cpu_regs[a->rs]);
+    return true;
+}
+
+/* xor rs, rs2, rd */
+static bool trans_XOR_rrr(DisasContext *ctx, arg_XOR_rrr *a)
+{
+    if (!require_isa(ctx, RX_ISA_V3)) {
+        return false;
+    }
+    rx_gen_op_rrr(rx_xor, a->rd, a->rs, a->rs2);
     return true;
 }
 
@@ -2405,6 +2850,7 @@ static void rx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     ctx->env = cpu_env(cs);
     ctx->tb_flags = ctx->base.tb->flags;
+    ctx->isa_version = RX_CPU_GET_CLASS(cs)->isa_version;
 }
 
 static void rx_tr_tb_start(DisasContextBase *dcbase, CPUState *cs)
@@ -2506,4 +2952,19 @@ void rx_translate_init(void)
     ALLOC_REGISTER(intb, "INTB");
     cpu_acc = tcg_global_mem_new_i64(tcg_env,
                                      offsetof(CPURXState, acc), "ACC");
+
+    for (i = 0; i < NUM_DREGS; i++) {
+        g_autofree char *name = g_strdup_printf("DR%d", i);
+        cpu_dregs[i] = tcg_global_mem_new_i64(tcg_env,
+                                              offsetof(CPURXState, dr[i]),
+                                              name);
+    }
+    for (i = 0; i < NUM_DCREGS; i++) {
+        static const char * const dcrnames[NUM_DCREGS] = {
+            "DPSW", "DCMR", "DECNT", "DEPC"
+        };
+        cpu_dcregs[i] = tcg_global_mem_new_i32(tcg_env,
+                                               offsetof(CPURXState, dcr[i]),
+                                               dcrnames[i]);
+    }
 }

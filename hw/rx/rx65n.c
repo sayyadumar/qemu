@@ -27,6 +27,10 @@
 #include "hw/loader.h"
 #include "hw/sysbus.h"
 #include "hw/qdev-properties.h"
+#include "system/reset.h"
+#include "hw/qdev-properties-system.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
 #include "hw/misc/unimp.h"
 #include "net/net.h"
 #include "system/system.h"
@@ -80,39 +84,49 @@ DECLARE_CLASS_CHECKERS(RX65NClass, RX65N_MCU, TYPE_RX65N_MCU)
  * Entries for unimplemented RX65N-specific peripherals (USB, CAN,
  * Ethernet, MTU3, GPT) are marked 0xff pending full implementation.
  */
+/*
+ * Interrupt priority register assignment, from Table 15.5 of the RX65N/RX651
+ * hardware manual. For all but a handful of low-numbered sources the IPR
+ * number is simply the vector number; BUSERR, GROUPIE0 and RAMERR share
+ * IPR000, the two software interrupts share IPR003, and the flash and timer
+ * sources below vector 32 have their own small numbers. 0xff marks a vector
+ * with no IPR register, which leaves it masked.
+ *
+ * This is not the RX62N assignment, which is a different table entirely.
+ */
 static const uint8_t ipr_table[NR_IRQS] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, /* 0-15 */
-    0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0xff, 0x02,
-    0xff, 0xff, 0xff, 0x03, 0x04, 0x05, 0x06, 0x07, /* 16-31 */
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x14, 0x14, 0x14, /* 32-47 */
-    0x15, 0x15, 0x15, 0x15, 0xff, 0xff, 0xff, 0xff,
-    0x18, 0x18, 0x18, 0x18, 0x18, 0x1d, 0x1e, 0x1f, /* 48-63 */
-    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
-    0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, /* 64-79 */
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0x3a, 0x3b, 0x3c, 0xff, 0xff, 0xff, /* 80-95 */
-    0x40, 0xff, 0x44, 0x45, 0xff, 0xff, 0x48, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, /* 96-111 */
-    0xff, 0xff, 0x51, 0x51, 0x51, 0x51, 0x52, 0x52,
-    0x52, 0x53, 0x53, 0x54, 0x54, 0x55, 0x55, 0x56, /* 112-127 */
-    0x56, 0x57, 0x57, 0x57, 0x57, 0x58, 0x59, 0x59,
-    0x59, 0x59, 0x5a, 0x5b, 0x5b, 0x5b, 0x5c, 0x5c, /* 128-143 */
-    0x5c, 0x5c, 0x5d, 0x5d, 0x5d, 0x5e, 0x5e, 0x5f,
-    0x5f, 0x60, 0x60, 0x61, 0x61, 0x62, 0x62, 0x62, /* 144-159 */
-    0x62, 0x63, 0x64, 0x64, 0x64, 0x64, 0x65, 0x66,
-    0x66, 0x66, 0x67, 0x67, 0x67, 0x67, 0x68, 0x68, /* 160-175 */
-    0x68, 0x69, 0x69, 0x69, 0x6a, 0x6a, 0x6a, 0x6b,
-    0x6b, 0x6b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, /* 176-191 */
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x70, 0x71,
-    0x72, 0x73, 0x74, 0x75, 0xff, 0xff, 0xff, 0xff, /* 192-207 */
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80, 0x80,
-    0x80, 0x80, 0x81, 0x81, 0x81, 0x81, 0x82, 0x82, /* 208-223 */
-    0x82, 0x82, 0x83, 0x83, 0x83, 0x83, 0xff, 0xff,
-    0xff, 0xff, 0x85, 0x85, 0x85, 0x85, 0x86, 0x86, /* 224-239 */
-    0x86, 0x86, 0xff, 0xff, 0xff, 0xff, 0x88, 0x89,
-    0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x91, /* 240-255 */
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, /* 8-23 */
+    0x00, 0x00, 0x00, 0xff, 0xff, 0x01, 0xff, 0x02,
+    0xff, 0xff, 0x03, 0x03, 0x04, 0x05, 0x06, 0x07, /* 24-39 */
+    0xff, 0xff, 0x22, 0x23, 0xff, 0xff, 0x26, 0x27,
+    0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0xff, 0xff, /* 40-55 */
+    0xff, 0xff, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    0xff, 0xff, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, /* 56-71 */
+    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, /* 72-87 */
+    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57,
+    0x58, 0x59, 0x5a, 0xff, 0x5c, 0x5d, 0xff, 0x5f, /* 88-103 */
+    0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+    0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f, /* 104-119 */
+    0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0xff, 0xff,
+    0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f, /* 120-135 */
+    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, /* 136-151 */
+    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, /* 152-167 */
+    0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+    0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf, /* 168-183 */
+    0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
+    0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf, /* 184-199 */
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+    0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf, /* 200-215 */
+    0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7,
+    0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, /* 216-231 */
+    0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+    0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef, /* 232-247 */
+    0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
+    0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff, /* 248-263 */
 };
 
 /*
@@ -194,6 +208,16 @@ static void register_cmt(RX65NState *s, int unit)
     sysbus_mmio_map(cmt, 0, RX65N_CMT_BASE + unit * 0x10);
 }
 
+static void register_crc(RX65NState *s)
+{
+    SysBusDevice *crc;
+
+    object_initialize_child(OBJECT(s), "crc", &s->crc, TYPE_RENESAS_RX_CRC);
+    crc = SYS_BUS_DEVICE(&s->crc);
+    sysbus_realize(crc, &error_abort);
+    sysbus_mmio_map(crc, 0, RX65N_CRC_BASE);
+}
+
 static void register_sci(RX65NState *s, int unit)
 {
     SysBusDevice *sci;
@@ -201,24 +225,36 @@ static void register_sci(RX65NState *s, int unit)
     object_initialize_child(OBJECT(s), "sci[*]",
                             &s->sci[unit], TYPE_RENESAS_SCI);
     sci = SYS_BUS_DEVICE(&s->sci[unit]);
-    qdev_prop_set_chr(DEVICE(sci), "chardev", serial_hd(0));
+    /*
+     * The console lives on SCI4 and takes the first -serial chardev. Other
+     * channels take the chardev of the same index, so further -serial
+     * options can back them; index 0 is skipped because the console already
+     * holds it, and a channel with no chardev still presents its registers.
+     */
+    qdev_prop_set_chr(DEVICE(sci), "chardev",
+                      unit == RX65N_SCI_CONSOLE ? serial_hd(0)
+                      : unit == 0               ? NULL
+                                                : serial_hd(unit));
     qdev_prop_set_uint64(DEVICE(sci), "input-freq", s->pclk_freq_hz);
     sysbus_realize(sci, &error_abort);
 
     /*
-     * The firmware serial console is wired to SCI channel 4.
-     * RXI4/TXI4 have individual vectors; ERI4/TEI4 are sourced through
-     * the GROUPBL0 group interrupt.
+     * Only SCI4's interrupt vectors are wired: RXI4 and TXI4 have individual
+     * vectors and ERI4/TEI4 come through the GROUPBL0 group interrupt. The
+     * other channels are mapped so their registers respond, which is enough
+     * for a polled driver, but their vectors are not connected.
      */
-    sysbus_connect_irq(sci, ERI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
-    sysbus_connect_irq(sci, RXI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_RXI));
-    sysbus_connect_irq(sci, TXI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_TXI));
-    sysbus_connect_irq(sci, TEI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
-    sysbus_mmio_map(sci, 0, RX65N_SCI4_BASE);
+    if (unit == RX65N_SCI_CONSOLE) {
+        sysbus_connect_irq(sci, ERI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
+        sysbus_connect_irq(sci, RXI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_RXI));
+        sysbus_connect_irq(sci, TXI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_TXI));
+        sysbus_connect_irq(sci, TEI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
+    }
+    sysbus_mmio_map(sci, 0, RX65N_SCI_BASE + unit * RX65N_SCI_SPACING);
 }
 
 static void register_mtu3(RX65NState *s)
@@ -311,12 +347,28 @@ static void register_fcu(RX65NState *s, RX65NClass *rxc)
     qdev_prop_set_uint32(DEVICE(fcu), "data-flash-size", rxc->data_flash_size);
     qdev_prop_set_uint32(DEVICE(fcu), "code-flash-base", s->cflash_base);
     qdev_prop_set_uint32(DEVICE(fcu), "data-flash-base", RX65N_DFLASH_BASE);
+    /*
+     * Optional persistent backing: -drive if=pflash,unit=0 for the code
+     * flash and unit=1 for the data flash. Without them the arrays are
+     * volatile and start erased.
+     */
+    qdev_prop_set_drive(DEVICE(fcu), "code-flash-drive",
+                        drive_get(IF_PFLASH, 0, 0) ?
+                        blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 0)) : NULL);
+    qdev_prop_set_drive(DEVICE(fcu), "data-flash-drive",
+                        drive_get(IF_PFLASH, 0, 1) ?
+                        blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 1)) : NULL);
+    qdev_prop_set_drive(DEVICE(fcu), "ofsm-drive",
+                        drive_get(IF_PFLASH, 0, 2) ?
+                        blk_by_legacy_dinfo(drive_get(IF_PFLASH, 0, 2)) : NULL);
     sysbus_realize(fcu, &error_abort);
 
     /* Region 0: FACI registers; region 1: code flash; region 2: data flash. */
     sysbus_mmio_map(fcu, RX_FCU_MMIO_REGS, RX65N_FCU_BASE);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_CFLASH, s->cflash_base);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_DFLASH, RX65N_DFLASH_BASE);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_OFSM, RX65N_OFSM_BASE);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_FACI, RX_FCU_FACI_ISSUE_BASE);
 
     sysbus_connect_irq(fcu, RX_FCU_IRQ_FRDYI,
                        qdev_get_gpio_in(DEVICE(&s->icu), RX65N_FCU_FRDYI));
@@ -385,6 +437,35 @@ static void register_rtc(RX65NState *s)
     sysbus_mmio_map(rtc, 0, RX65N_RTC_BASE);
 }
 
+/*
+ * The CPU latches its reset vector during CPU reset, which the SoC has to
+ * run before the peripherals exist because the interrupt controller needs a
+ * realized CPU. That is fine for a firmware image loaded with -bios, which
+ * the ROM loader can answer for at any time, but not for a code flash backed
+ * by a drive: nothing is mapped at the vector address yet. Re-read it here,
+ * from a handler that runs at machine reset once every region is in place.
+ */
+static void rx65n_reset_vector(void *opaque)
+{
+    RX65NState *s = opaque;
+    uint32_t vec;
+
+    /*
+     * Re-latch the code flash bank layout first: in dual mode the vector
+     * lives in whichever bank is mapped high, so reading it before the swap
+     * has been applied would fetch it from the wrong bank.
+     */
+    rx_fcu_update_bank_map(&s->fcu);
+
+    if (rom_ptr(0xfffffffc, 4)) {
+        return;     /* a ROM blob covers the vector; the CPU already has it */
+    }
+    vec = ldl_le_phys(CPU(&s->cpu)->as, 0xfffffffc);
+    if (vec != 0 && vec != 0xffffffff) {
+        s->cpu.env.pc = vec;
+    }
+}
+
 static void rx65n_realize(DeviceState *dev, Error **errp)
 {
     RX65NState *s = RX65N_MCU(dev);
@@ -429,6 +510,14 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
         memory_region_add_subregion(s->sysmem, RX65N_EXRAM_BASE, &s->exram);
     }
 
+    /*
+     * Catch-all over the peripheral register space, mapped at a lower
+     * priority than every real device. Without it an access to a peripheral
+     * this model does not implement reads back zero in silence, which during
+     * bring-up looks identical to a peripheral that is present but idle.
+     */
+    create_unimplemented_device("rx65n.peripheral", 0x00080000, 0x00080000);
+
     /* Stub out unimplemented peripheral regions so accesses log warnings */
     create_unimplemented_device("rx65n.usb",    0x000A0000, 0x10000);
     create_unimplemented_device("rx65n.rscan",  0x000A8000, 0x10000);
@@ -451,11 +540,16 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_tmr(s, 1);
     register_cmt(s, 0);
     register_cmt(s, 1);
-    register_sci(s, 0);
+    register_crc(s);
+    for (int i = 0; i < RX65N_NR_SCI; i++) {
+        register_sci(s, i);
+    }
     register_mtu3(s);
     register_s12ad(s);
     register_rspi(s);
     register_etherc(s);
+    qemu_register_reset(rx65n_reset_vector, s);
+
 }
 
 static const Property rx65n_properties[] = {
@@ -491,6 +585,20 @@ static void r5f565nh_class_init(ObjectClass *oc, const void *data)
     rxc->data_flash_size = 32  * KiB;
 }
 
+/*
+ * RX651 part with 1.5 MB of code flash. Same die family as the RX65N parts,
+ * with the Ethernet controller depopulated; the model leaves ETHERC in place,
+ * which firmware for this part simply never touches.
+ */
+static void r5f5651c_class_init(ObjectClass *oc, const void *data)
+{
+    RX65NClass *rxc = RX65N_MCU_CLASS(oc);
+
+    rxc->ram_size        = 640 * KiB;
+    rxc->rom_flash_size  = 1536 * KiB;
+    rxc->data_flash_size = 32  * KiB;
+}
+
 static const TypeInfo rx65n_types[] = {
     {
         .name       = TYPE_R5F565NE_MCU,
@@ -500,6 +608,10 @@ static const TypeInfo rx65n_types[] = {
         .name       = TYPE_R5F565NH_MCU,
         .parent     = TYPE_RX65N_MCU,
         .class_init = r5f565nh_class_init,
+    }, {
+        .name       = TYPE_R5F5651C_MCU,
+        .parent     = TYPE_RX65N_MCU,
+        .class_init = r5f5651c_class_init,
     }, {
         .name          = TYPE_RX65N_MCU,
         .parent        = TYPE_DEVICE,

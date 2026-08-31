@@ -40,6 +40,11 @@
 #include "hw/misc/renesas_rx_fcu.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
+#include "system/block-backend.h"
+#include "hw/block/block.h"
+#include "qemu/error-report.h"
+#include "qemu/units.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 
@@ -85,12 +90,15 @@
 #define FACI_CMD_PROGRAM     0xE8
 #define FACI_CMD_BLOCK_ERASE 0x20
 #define FACI_CMD_BLANK_CHECK 0x71
+#define FACI_CMD_CONFIG_SET  0x40
 #define FACI_CMD_CLEAR_STAT  0x50
 #define FACI_CMD_FORCED_STOP 0xB3
 #define FACI_CMD_CONFIRM     0xD0
 
 /* Erase block granularity (HW manual section 6). */
 #define CFLASH_ERASE_BLOCK   0x8000     /* 32 KiB code flash block     */
+#define CFLASH_SMALL_BLOCK   0x2000     /* 8 KiB block, blocks 0 to 7  */
+#define CFLASH_SMALL_REGION  0x10000    /* the eight small blocks span 64 KiB */
 #define DFLASH_ERASE_BLOCK   0x40       /* 64-byte data flash block    */
 
 static bool target_in_pe_mode(RenesasRxFcuState *s, RxFcuTarget t)
@@ -119,7 +127,50 @@ static bool addr_to_offset(RenesasRxFcuState *s, RxFcuTarget t,
         return false;
     }
     *off = addr - base;
+
+    /*
+     * "When the address is switched by using startup bank selection, the P/E
+     * target for the FACI commands is also switched." The address the guest
+     * puts in FSADDR is a bus address, so with the banks exchanged it has to
+     * be translated to the physical half the same way the memory aliases do.
+     */
+    if (t == RX_FCU_CFLASH && s->bank_swapped) {
+        uint32_t hsz = s->cflash_size / 2;
+        *off = *off < hsz ? *off + hsz : *off - hsz;
+    }
     return true;
+}
+
+/*
+ * Code flash erase blocks are not uniform: the top 64 KB of each bank (of the
+ * whole array in linear mode) is eight 8 KB blocks, and everything below is
+ * 32 KB blocks. Return the block containing a physical offset.
+ */
+static void cflash_erase_block(RenesasRxFcuState *s, uint32_t off,
+                               uint32_t *start, uint32_t *len)
+{
+    uint32_t unit = s->dual_mode ? s->cflash_size / 2 : s->cflash_size;
+    uint32_t within = off % unit;
+    uint32_t base = off - within;
+
+    if (within >= unit - CFLASH_SMALL_REGION) {
+        *len = CFLASH_SMALL_BLOCK;
+    } else {
+        *len = CFLASH_ERASE_BLOCK;
+    }
+    *start = base + (within & ~(*len - 1));
+}
+
+/*
+ * FCMDR pairs the command just received (CMDR, low byte) with the one before
+ * it (PCMDR, high byte). A two-byte sequence such as block erase therefore
+ * ends up reading 0x20d0: 0x20 shifted up by the 0xd0 confirm. The confirm
+ * that terminates a programming sequence is not recorded, which is why the
+ * manual lists programming as leaving CMDR at 0xe8.
+ */
+static void faci_set_cmdr(RenesasRxFcuState *s, uint8_t cmd)
+{
+    s->fcmdr = ((s->fcmdr & 0xff) << 8) | cmd;
 }
 
 /* Finish a command: report ready and pulse the ready interrupt if enabled. */
@@ -143,12 +194,60 @@ static void faci_illegal(RenesasRxFcuState *s)
     }
 }
 
+/* Write the option-setting memory back to its image, if one is attached. */
+static void fcu_ofsm_sync(RenesasRxFcuState *s)
+{
+    if (!s->ofsm_blk || s->ofsm_ro) {
+        return;
+    }
+    if (blk_pwrite(s->ofsm_blk, 0, RX_FCU_OFSM_SIZE, s->ofsm_ptr, 0) < 0) {
+        error_report("renesas-rx-fcu: could not write the OFSM image");
+    }
+}
+
+/*
+ * Write a modified range of an array back to its block backend, if one is
+ * attached. Offsets are widened to sector boundaries the way pflash does.
+ */
+static void fcu_flash_sync(RenesasRxFcuState *s, RxFcuTarget t,
+                           uint32_t off, uint32_t len)
+{
+    BlockBackend *blk = t == RX_FCU_CFLASH ? s->cflash_blk : s->dflash_blk;
+    bool ro = t == RX_FCU_CFLASH ? s->cflash_ro : s->dflash_ro;
+    uint32_t size = target_size(s, t);
+    uint64_t start, end;
+    int ret;
+
+    if (!blk || ro) {
+        return;
+    }
+    start = QEMU_ALIGN_DOWN(off, BDRV_SECTOR_SIZE);
+    end = QEMU_ALIGN_UP((uint64_t)off + len, BDRV_SECTOR_SIZE);
+    if (end > size) {
+        end = size;
+    }
+    if (start >= end) {
+        return;
+    }
+    ret = blk_pwrite(blk, start, end - start,
+                     target_storage(s, t) + start, 0);
+    if (ret < 0) {
+        error_report("renesas-rx-fcu: could not write flash image: %s",
+                     strerror(-ret));
+    }
+}
+
 static void faci_block_erase(RenesasRxFcuState *s, RxFcuTarget t, uint32_t off)
 {
-    uint32_t block = t == RX_FCU_CFLASH ? CFLASH_ERASE_BLOCK
-                                        : DFLASH_ERASE_BLOCK;
-    uint32_t start = off & ~(block - 1);
     uint32_t size = target_size(s, t);
+    uint32_t block, start;
+
+    if (t == RX_FCU_CFLASH) {
+        cflash_erase_block(s, off, &start, &block);
+    } else {
+        block = DFLASH_ERASE_BLOCK;
+        start = off & ~(block - 1);
+    }
 
     if (start >= size) {
         faci_illegal(s);
@@ -158,6 +257,7 @@ static void faci_block_erase(RenesasRxFcuState *s, RxFcuTarget t, uint32_t off)
         block = size - start;
     }
     memset(target_storage(s, t) + start, 0xff, block);
+    fcu_flash_sync(s, t, start, block);
     s->fpsaddr = (t == RX_FCU_CFLASH ? s->cflash_base : s->dflash_base) + start;
     faci_complete(s);
 }
@@ -195,7 +295,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
 
     switch (s->cmd_state) {
     case RX_FCU_ST_READY:
-        s->fcmdr = cmd;
+        faci_set_cmdr(s, cmd);
         switch (cmd) {
         case FACI_CMD_PROGRAM:
             s->cmd_target = t;
@@ -212,6 +312,15 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
         case FACI_CMD_BLANK_CHECK:
             s->cmd_target = t;
             s->cmd_state = RX_FCU_ST_BLANKCHECK;
+            break;
+        case FACI_CMD_CONFIG_SET:
+            /*
+             * Configuration set writes one 16-byte row of the option-setting
+             * memory. FSADDR selects the row: its low byte is the offset
+             * within the OFSM, so 0x00ff5d20 reaches BANKSEL at +0x20.
+             */
+            s->cfg_off = s->fsaddr & (RX_FCU_OFSM_SIZE - 1) & ~0xfu;
+            s->cmd_state = RX_FCU_ST_CONFIG_COUNT;
             break;
         case FACI_CMD_CLEAR_STAT:
             s->fstatr = (s->fstatr & ~FSTATR_ERRORS) | FSTATR_FRDY;
@@ -230,6 +339,29 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
         }
         break;
 
+    case RX_FCU_ST_CONFIG_COUNT:
+        /* Always eight 16-bit words, i.e. the 16-byte row. */
+        s->prog_words = value & 0xff;
+        s->cmd_state = RX_FCU_ST_CONFIG_DATA;
+        break;
+
+    case RX_FCU_ST_CONFIG_DATA:
+        if (s->prog_words > 0) {
+            if (s->cfg_off + 2 <= RX_FCU_OFSM_SIZE) {
+                /* Like the arrays, programming can only clear bits. */
+                uint16_t cur = lduw_le_p(s->ofsm_ptr + s->cfg_off);
+                stw_le_p(s->ofsm_ptr + s->cfg_off, cur & (uint16_t)value);
+            }
+            s->cfg_off += 2;
+            s->prog_words--;
+        } else if (cmd == FACI_CMD_CONFIRM) {
+            fcu_ofsm_sync(s);
+            faci_complete(s);
+        } else {
+            faci_illegal(s);
+        }
+        break;
+
     case RX_FCU_ST_PROGRAM_COUNT:
         /* Number of 16-bit data words that follow. */
         s->prog_words = value & 0xff;
@@ -244,6 +376,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
                 /* Flash programming can only clear bits; emulate write as AND. */
                 uint16_t cur = lduw_le_p(p + s->prog_off);
                 stw_le_p(p + s->prog_off, cur & (uint16_t)value);
+                fcu_flash_sync(s, s->cmd_target, s->prog_off, 2);
             }
             s->prog_off += 2;
             s->prog_words--;
@@ -256,6 +389,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
 
     case RX_FCU_ST_ERASE:
         if (cmd == FACI_CMD_CONFIRM) {
+            faci_set_cmdr(s, cmd);
             faci_block_erase(s, s->cmd_target, s->prog_off);
         } else {
             faci_illegal(s);
@@ -264,6 +398,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
 
     case RX_FCU_ST_BLANKCHECK:
         if (cmd == FACI_CMD_CONFIRM) {
+            faci_set_cmdr(s, cmd);
             faci_blank_check(s, s->cmd_target);
         } else {
             faci_illegal(s);
@@ -296,17 +431,66 @@ static void faci_flash_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
 {
     RxFcuFlash *f = opaque;
-    RenesasRxFcuState *s = f->fcu;
 
-    if (!target_in_pe_mode(s, f->target)) {
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "renesas-rx-fcu: write to the %s flash array @0x%"
+                  HWADDR_PRIx "; FACI commands are issued to 0x%08x\n",
+                  f->target == RX_FCU_CFLASH ? "code" : "data", offset,
+                  RX_FCU_FACI_ISSUE_BASE);
+}
+
+/*
+ * The FACI command-issuing area. Every FACI command byte and every data word
+ * is written here, four bytes at 0x007E0000, rather than to the flash array;
+ * the destination inside the array comes from FSADDR. The array itself is
+ * not writable, so a write there is a guest error rather than a command.
+ */
+static void faci_issue_write(void *opaque, hwaddr offset, uint64_t value,
+                             unsigned size)
+{
+    RenesasRxFcuState *s = opaque;
+    RxFcuTarget t;
+    uint32_t off;
+
+    if (target_in_pe_mode(s, RX_FCU_CFLASH)) {
+        t = RX_FCU_CFLASH;
+    } else if (target_in_pe_mode(s, RX_FCU_DFLASH)) {
+        t = RX_FCU_DFLASH;
+    } else {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "renesas-rx-fcu: write to %s flash @0x%" HWADDR_PRIx
-                      " while not in P/E mode\n",
-                      f->target == RX_FCU_CFLASH ? "code" : "data", offset);
+                      "renesas-rx-fcu: FACI command 0x%02x issued while "
+                      "neither array is in P/E mode\n", (uint8_t)value);
         return;
     }
-    faci_command(s, f->target, offset, value, size);
+
+    /*
+     * Only the command that opens a sequence needs an address; the count,
+     * data words and confirmation that follow continue where it left off.
+     */
+    if (s->cmd_state == RX_FCU_ST_READY &&
+        !addr_to_offset(s, t, s->fsaddr, &off)) {
+        off = 0;
+    } else {
+        off = s->prog_off;
+    }
+    faci_command(s, t, off, value, size);
 }
+
+static uint64_t faci_issue_read(void *opaque, hwaddr offset, unsigned size)
+{
+    /* The command-issuing area is write-only; reads are undefined. */
+    return 0;
+}
+
+static const MemoryRegionOps faci_issue_ops = {
+    .read = faci_issue_read,
+    .write = faci_issue_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+};
 
 static const MemoryRegionOps faci_flash_ops = {
     .read = faci_flash_read,
@@ -483,9 +667,61 @@ static const MemoryRegionOps fcu_regs_ops = {
     },
 };
 
+/*
+ * Latch the code flash bank layout from the option-setting memory. The
+ * hardware samples MDE.BANKMD and BANKSEL.BANKSWP at reset, so a mode or
+ * bank switch only takes effect on the next reset, which is what makes the
+ * "program the other bank then reboot into it" update flow work.
+ *
+ * BANKSWP = 111b maps bank 0, the one holding the vectors, into the upper
+ * half, which is the layout a linearly programmed image already has, so it
+ * needs no aliasing. 000b swaps the halves.
+ */
+void rx_fcu_update_bank_map(RenesasRxFcuState *s)
+{
+    uint32_t mde, banksel;
+    bool dual, swapped;
+
+    mde = ldl_le_p(s->ofsm_ptr + RX_OFSM_MDE);
+    banksel = ldl_le_p(s->ofsm_ptr + RX_OFSM_BANKSEL);
+
+    dual = (mde & RX_BANKMD_MASK) == RX_BANKMD_DUAL;
+    swapped = (banksel & RX_BANKSWP_MASK) == RX_BANKSWP_SWAPPED;
+
+    /*
+     * Dual mode needs a code flash of at least 1.5 MB. Smaller parts do not
+     * offer it, and the 1.5 MB bank bases are not simply the halves of the
+     * linear range, so only the 2 MB layout is handled here.
+     */
+    if (dual && s->cflash_size < 2 * MiB) {
+        qemu_log_mask(LOG_UNIMP,
+                      "renesas-rx-fcu: dual mode requested on a %u KiB code "
+                      "flash is not modelled; staying linear\n",
+                      s->cflash_size / 1024);
+        dual = false;
+    }
+
+    s->dual_mode = dual;
+    s->bank_swapped = dual && swapped;
+
+    memory_region_transaction_begin();
+    memory_region_set_enabled(&s->cflash_linear, !s->bank_swapped);
+    memory_region_set_enabled(&s->cflash_bank[0], s->bank_swapped);
+    memory_region_set_enabled(&s->cflash_bank[1], s->bank_swapped);
+    if (s->bank_swapped) {
+        /* Lower half of the map shows bank 0, upper half shows bank 1. */
+        memory_region_set_alias_offset(&s->cflash_bank[0], s->cflash_size / 2);
+        memory_region_set_alias_offset(&s->cflash_bank[1], 0);
+    }
+    memory_region_transaction_commit();
+}
+
 static void rx_fcu_reset(DeviceState *dev)
 {
     RenesasRxFcuState *s = RENESAS_RX_FCU(dev);
+
+    /* The bank layout is sampled from the OFSM at every reset. */
+    rx_fcu_update_bank_map(s);
 
     /* Exit P/E mode and restore direct (romd) flash reads. */
     memory_region_rom_device_set_romd(&s->cflash_mr, true);
@@ -515,6 +751,45 @@ static void rx_fcu_reset(DeviceState *dev)
     qemu_set_irq(s->fiferr, 0);
 }
 
+/*
+ * Attach one array to its block backend: take the write permission if the
+ * image allows it, then load the image over the erased contents. A backend
+ * whose size does not match the array is rejected rather than silently
+ * truncated.
+ */
+static bool fcu_attach_blk(RenesasRxFcuState *s, DeviceState *dev,
+                           RxFcuTarget t, Error **errp)
+{
+    BlockBackend *blk = t == RX_FCU_CFLASH ? s->cflash_blk : s->dflash_blk;
+    MemoryRegion *mr = t == RX_FCU_CFLASH ? &s->cflash_mr : &s->dflash_mr;
+    uint32_t size = target_size(s, t);
+    uint64_t perm;
+    bool ro;
+
+    if (!blk) {
+        return true;
+    }
+
+    ro = !blk_supports_write_perm(blk);
+    if (t == RX_FCU_CFLASH) {
+        s->cflash_ro = ro;
+    } else {
+        s->dflash_ro = ro;
+    }
+
+    perm = BLK_PERM_CONSISTENT_READ | (ro ? 0 : BLK_PERM_WRITE);
+    if (blk_set_perm(blk, perm, BLK_PERM_ALL, errp) < 0) {
+        return false;
+    }
+
+    if (!blk_check_size_and_read_all(blk, dev, target_storage(s, t),
+                                     size, errp)) {
+        vmstate_unregister_ram(mr, dev);
+        return false;
+    }
+    return true;
+}
+
 static void rx_fcu_realize(DeviceState *dev, Error **errp)
 {
     RenesasRxFcuState *s = RENESAS_RX_FCU(dev);
@@ -532,6 +807,8 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
 
     memory_region_init_io(&s->regs_mr, OBJECT(s), &fcu_regs_ops, s,
                           "renesas-rx-fcu.regs", RX_FCU_REGS_SIZE);
+    memory_region_init_io(&s->faci_mr, OBJECT(s), &faci_issue_ops, s,
+                          "renesas-rx-fcu.faci", RX_FCU_FACI_ISSUE_SIZE);
 
     if (!memory_region_init_rom_device(&s->cflash_mr, OBJECT(s),
                                        &faci_flash_ops, &s->cflash_ctx,
@@ -545,18 +822,97 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
                                        s->dflash_size, errp)) {
         return;
     }
+    /*
+     * The option-setting memory is read-only to ordinary accesses; it is
+     * only changed by the FACI configuration-set command, which is not
+     * modelled, so a plain ROM is the right shape for it.
+     */
+    if (!memory_region_init_rom(&s->ofsm_mr, OBJECT(s),
+                                "renesas-rx-fcu.ofsm",
+                                RX_FCU_OFSM_SIZE, errp)) {
+        return;
+    }
+
+    /*
+     * The code flash reaches the bus through a container holding either one
+     * alias over the whole array (linear mode) or one per bank (dual mode).
+     */
+    memory_region_init(&s->cflash_container, OBJECT(s),
+                       "renesas-rx-fcu.cflash-map", s->cflash_size);
+    memory_region_init_alias(&s->cflash_linear, OBJECT(s),
+                             "renesas-rx-fcu.cflash-linear",
+                             &s->cflash_mr, 0, s->cflash_size);
+    memory_region_add_subregion(&s->cflash_container, 0, &s->cflash_linear);
+
+    for (int i = 0; i < 2; i++) {
+        g_autofree char *name =
+            g_strdup_printf("renesas-rx-fcu.cflash-bank%d", i);
+        memory_region_init_alias(&s->cflash_bank[i], OBJECT(s), name,
+                                 &s->cflash_mr, 0, s->cflash_size / 2);
+        memory_region_add_subregion(&s->cflash_container,
+                                    (hwaddr)i * (s->cflash_size / 2),
+                                    &s->cflash_bank[i]);
+        memory_region_set_enabled(&s->cflash_bank[i], false);
+    }
 
     s->cflash_ptr = memory_region_get_ram_ptr(&s->cflash_mr);
     s->dflash_ptr = memory_region_get_ram_ptr(&s->dflash_mr);
+    s->ofsm_ptr = memory_region_get_ram_ptr(&s->ofsm_mr);
+
+    /*
+     * Erased flash reads as all ones, but the backing memory starts zeroed.
+     * Fill both arrays here rather than at reset: realize runs before the
+     * ROM loader writes the firmware image into the code flash, and flash
+     * is non-volatile, so anything the guest programmed must survive a
+     * later system reset.
+     */
+    memset(s->cflash_ptr, 0xff, s->cflash_size);
+    memset(s->dflash_ptr, 0xff, s->dflash_size);
+    memset(s->ofsm_ptr, 0xff, RX_FCU_OFSM_SIZE);
+
+    if (!fcu_attach_blk(s, dev, RX_FCU_CFLASH, errp) ||
+        !fcu_attach_blk(s, dev, RX_FCU_DFLASH, errp)) {
+        return;
+    }
+    if (s->ofsm_blk) {
+        uint64_t perm;
+        int64_t len;
+
+        s->ofsm_ro = !blk_supports_write_perm(s->ofsm_blk);
+        perm = BLK_PERM_CONSISTENT_READ | (s->ofsm_ro ? 0 : BLK_PERM_WRITE);
+        if (blk_set_perm(s->ofsm_blk, perm, BLK_PERM_ALL, errp) < 0) {
+            return;
+        }
+        /*
+         * The OFSM is smaller than a block sector, so an exact size match is
+         * not something an image file can offer. Require enough bytes and
+         * read only the ones the region holds.
+         */
+        len = blk_getlength(s->ofsm_blk);
+        if (len < RX_FCU_OFSM_SIZE) {
+            error_setg(errp, "ofsm-drive is %" PRId64 " bytes, need at least %d",
+                       len, RX_FCU_OFSM_SIZE);
+            return;
+        }
+        if (blk_pread(s->ofsm_blk, 0, RX_FCU_OFSM_SIZE, s->ofsm_ptr, 0) < 0) {
+            error_setg(errp, "could not read ofsm-drive");
+            return;
+        }
+    }
 
     sysbus_init_mmio(sbd, &s->regs_mr);
-    sysbus_init_mmio(sbd, &s->cflash_mr);
+    sysbus_init_mmio(sbd, &s->cflash_container);
     sysbus_init_mmio(sbd, &s->dflash_mr);
+    sysbus_init_mmio(sbd, &s->ofsm_mr);
+    sysbus_init_mmio(sbd, &s->faci_mr);
     sysbus_init_irq(sbd, &s->frdyi);
     sysbus_init_irq(sbd, &s->fiferr);
 }
 
 static const Property rx_fcu_properties[] = {
+    DEFINE_PROP_DRIVE("code-flash-drive", RenesasRxFcuState, cflash_blk),
+    DEFINE_PROP_DRIVE("data-flash-drive", RenesasRxFcuState, dflash_blk),
+    DEFINE_PROP_DRIVE("ofsm-drive", RenesasRxFcuState, ofsm_blk),
     DEFINE_PROP_UINT32("code-flash-size", RenesasRxFcuState, cflash_size, 0),
     DEFINE_PROP_UINT32("data-flash-size", RenesasRxFcuState, dflash_size, 0),
     DEFINE_PROP_UINT32("code-flash-base", RenesasRxFcuState, cflash_base, 0),

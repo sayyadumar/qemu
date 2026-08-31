@@ -5,7 +5,7 @@
 # Verifies that the RX65N machine boots correctly:
 #   - Reads reset vector from 0xFFFFFFFC
 #   - Executes from flash base (0xFFF80000)
-#   - Drives SCI0 UART output via memory-mapped registers
+#   - Drives SCI4 UART output via memory-mapped registers
 #
 # Copyright (c) 2024 QEMU Contributors
 #
@@ -22,7 +22,7 @@ from qemu_test import QemuSystemTest, wait_for_console_pattern
 def build_firmware():
     """
     Build a minimal 512KB RX65N firmware image that:
-      1. Loads SCI0 base address (0x00088240) into R0
+      1. Loads the SCI4 console base address (0x0008A080) into R0
       2. Enables TX+RX via SCR register (offset 2)
       3. Outputs 'O','K','\\r','\\n' to TDR (offset 3), polling TDRE bit
          (SSR bit7, offset 4) between each character
@@ -38,13 +38,14 @@ def build_firmware():
             blob[off + i] = b
 
     off = 0
-    SCI0_BASE = 0x00088240
+    # SCI4 is the serial console: RX65N_SCI_BASE + 4 * RX65N_SCI_SPACING.
+    SCI4_BASE = 0x0008A000 + 4 * 0x20
 
-    # MOV.L #0x00088240, R0  (rd=0, li=0=4-byte-imm, sz=2=L)
+    # MOV.L #0x0008A080, R0  (rd=0, li=0=4-byte-imm, sz=2=L)
     # Encoding: FB 02 <LE32>
     put(off, 0xFB, 0x02,
-        SCI0_BASE & 0xFF, (SCI0_BASE >> 8) & 0xFF,
-        (SCI0_BASE >> 16) & 0xFF, (SCI0_BASE >> 24) & 0xFF)
+        SCI4_BASE & 0xFF, (SCI4_BASE >> 8) & 0xFF,
+        (SCI4_BASE >> 16) & 0xFF, (SCI4_BASE >> 24) & 0xFF)
     off += 6
 
     # MOV.B #0x30, 2[R0]  (SCR = TE|RE; rd=0, li=1=1-byte-imm, sz=0=B)
@@ -96,7 +97,7 @@ class RX65NMachine(QemuSystemTest):
     def test_uart_boot(self):
         """
         Boot the rx65n-r5f565ne-evk machine with a minimal bare-metal
-        firmware and verify that SCI0 UART output is produced correctly.
+        firmware and verify that SCI4 UART output is produced correctly.
         """
         fw = build_firmware()
         with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:

@@ -35,6 +35,7 @@
 #include "hw/net/renesas_etherc.h"
 #include "hw/misc/rx65n_sysclk.h"
 #include "hw/misc/renesas_rx_fcu.h"
+#include "hw/misc/renesas_rx_crc.h"
 #include "hw/gpio/renesas_rx_gpio.h"
 #include "hw/dma/renesas_rx_dmac.h"
 #include "hw/dma/renesas_rx_dtc.h"
@@ -49,6 +50,7 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 /* Concrete MCU variants */
 #define TYPE_R5F565NE_MCU   "r5f565ne-mcu"   /* 512 KB flash, 256 KB RAM */
 #define TYPE_R5F565NH_MCU   "r5f565nh-mcu"   /* 2 MB flash,   640 KB RAM */
+#define TYPE_R5F5651C_MCU   "r5f5651c-mcu"   /* 1.5 MB flash, 640 KB RAM */
 
 /* External chip-select base (for off-chip SDRAM/SRAM on board) */
 #define EXT_CS_BASE         0x01000000
@@ -63,7 +65,12 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
  * with more than 512 KB of SRAM (e.g. the 640 KB part) place the remainder in
  * a separate expansion SRAM region at 0x00800000.
  */
-#define RX65N_SRAM_MAX      (512 * 1024)
+/*
+ * On-chip SRAM at address 0 is 256 KB on every RX65N/RX651 part. The
+ * 640 KB variants carry the remaining 384 KB as expansion RAM at
+ * 0x00800000, so the split is fixed rather than a function of the total.
+ */
+#define RX65N_SRAM_MAX      (256 * 1024)
 #define RX65N_EXRAM_BASE    0x00800000
 #define RX65N_DFLASH_BASE   0x00100000
 /*
@@ -74,6 +81,7 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
  */
 #define RX65N_CFLASH_BASE_512K  0xFFF80000
 #define RX65N_CFLASH_BASE_2M    0xFFE00000
+#define RX65N_CFLASH_BASE_1M5   0xFFE80000
 
 /* Peripheral base addresses (HW manual section 5) */
 #define RX65N_SYSTEM_BASE   0x00080000
@@ -81,6 +89,9 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_TMR_BASE      0x00088200
 #define RX65N_CMT_BASE      0x00088000
 /* SCIg/SCIh channels: SCI0 @ 0x8A000, 0x20 spacing (HW manual section 5) */
+/* CRC calculator (CRCA) */
+#define RX65N_CRC_BASE      0x00088280
+
 #define RX65N_SCI_BASE      0x0008A000
 #define RX65N_SCI_SPACING   0x20
 #define RX65N_SCI4_BASE     (RX65N_SCI_BASE + 4 * RX65N_SCI_SPACING)
@@ -89,6 +100,9 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 #define RX65N_RSPI0_BASE    0x000D0100
 #define RX65N_ETHERC_BASE   0x000C0000
 /* Flash Control Unit FACI register block (HW manual section 6) */
+/* Option-setting memory (OFSM), holding MDE and BANKSEL */
+#define RX65N_OFSM_BASE     0xFE7F5D00
+
 #define RX65N_FCU_BASE      0x007FE000
 /* I/O ports (PORTn) and Multi-Function Pin Controller (MPC) */
 #define RX65N_GPIO_BASE     0x0008C000
@@ -107,7 +121,13 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 /* Phase 1: minimal peripheral counts (extend in later phases) */
 #define RX65N_NR_TMR    2
 #define RX65N_NR_CMT    2
-#define RX65N_NR_SCI    1
+/*
+ * SCI0 to SCI9 sit in one contiguous block at 0x0008a000. SCI4 is the
+ * console; the rest exist so firmware using another channel finds real
+ * registers rather than an unmapped hole.
+ */
+#define RX65N_NR_SCI        10
+#define RX65N_SCI_CONSOLE   4
 
 struct RX65NState {
     /*< private >*/
@@ -125,6 +145,7 @@ struct RX65NState {
     RX65NEthercState etherc;
     RX65NSysClkState sysclk;
     RenesasRxFcuState fcu;
+    RenesasRxCrcState crc;
     RenesasRxGpioState gpio;
     RenesasRxDmacState dmac;
     RenesasRxDtcState dtc;
