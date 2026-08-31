@@ -205,24 +205,36 @@ static void register_sci(RX65NState *s, int unit)
     object_initialize_child(OBJECT(s), "sci[*]",
                             &s->sci[unit], TYPE_RENESAS_SCI);
     sci = SYS_BUS_DEVICE(&s->sci[unit]);
-    qdev_prop_set_chr(DEVICE(sci), "chardev", serial_hd(0));
+    /*
+     * The console lives on SCI4 and takes the first -serial chardev. Other
+     * channels take the chardev of the same index, so further -serial
+     * options can back them; index 0 is skipped because the console already
+     * holds it, and a channel with no chardev still presents its registers.
+     */
+    qdev_prop_set_chr(DEVICE(sci), "chardev",
+                      unit == RX65N_SCI_CONSOLE ? serial_hd(0)
+                      : unit == 0               ? NULL
+                                                : serial_hd(unit));
     qdev_prop_set_uint64(DEVICE(sci), "input-freq", s->pclk_freq_hz);
     sysbus_realize(sci, &error_abort);
 
     /*
-     * The firmware serial console is wired to SCI channel 4.
-     * RXI4/TXI4 have individual vectors; ERI4/TEI4 are sourced through
-     * the GROUPBL0 group interrupt.
+     * Only SCI4's interrupt vectors are wired: RXI4 and TXI4 have individual
+     * vectors and ERI4/TEI4 come through the GROUPBL0 group interrupt. The
+     * other channels are mapped so their registers respond, which is enough
+     * for a polled driver, but their vectors are not connected.
      */
-    sysbus_connect_irq(sci, ERI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
-    sysbus_connect_irq(sci, RXI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_RXI));
-    sysbus_connect_irq(sci, TXI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_TXI));
-    sysbus_connect_irq(sci, TEI,
-                       qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
-    sysbus_mmio_map(sci, 0, RX65N_SCI4_BASE);
+    if (unit == RX65N_SCI_CONSOLE) {
+        sysbus_connect_irq(sci, ERI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
+        sysbus_connect_irq(sci, RXI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_RXI));
+        sysbus_connect_irq(sci, TXI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_SCI4_TXI));
+        sysbus_connect_irq(sci, TEI,
+                           qdev_get_gpio_in(DEVICE(&s->icu), RX65N_GROUPBL0));
+    }
+    sysbus_mmio_map(sci, 0, RX65N_SCI_BASE + unit * RX65N_SCI_SPACING);
 }
 
 static void register_mtu3(RX65NState *s)
@@ -478,6 +490,14 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
         memory_region_add_subregion(s->sysmem, RX65N_EXRAM_BASE, &s->exram);
     }
 
+    /*
+     * Catch-all over the peripheral register space, mapped at a lower
+     * priority than every real device. Without it an access to a peripheral
+     * this model does not implement reads back zero in silence, which during
+     * bring-up looks identical to a peripheral that is present but idle.
+     */
+    create_unimplemented_device("rx65n.peripheral", 0x00080000, 0x00080000);
+
     /* Stub out unimplemented peripheral regions so accesses log warnings */
     create_unimplemented_device("rx65n.usb",    0x000A0000, 0x10000);
     create_unimplemented_device("rx65n.rscan",  0x000A8000, 0x10000);
@@ -500,7 +520,9 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_tmr(s, 1);
     register_cmt(s, 0);
     register_cmt(s, 1);
-    register_sci(s, 0);
+    for (int i = 0; i < RX65N_NR_SCI; i++) {
+        register_sci(s, i);
+    }
     register_mtu3(s);
     register_s12ad(s);
     register_rspi(s);
@@ -542,6 +564,20 @@ static void r5f565nh_class_init(ObjectClass *oc, const void *data)
     rxc->data_flash_size = 32  * KiB;
 }
 
+/*
+ * RX651 part with 1.5 MB of code flash. Same die family as the RX65N parts,
+ * with the Ethernet controller depopulated; the model leaves ETHERC in place,
+ * which firmware for this part simply never touches.
+ */
+static void r5f5651c_class_init(ObjectClass *oc, const void *data)
+{
+    RX65NClass *rxc = RX65N_MCU_CLASS(oc);
+
+    rxc->ram_size        = 640 * KiB;
+    rxc->rom_flash_size  = 1536 * KiB;
+    rxc->data_flash_size = 32  * KiB;
+}
+
 static const TypeInfo rx65n_types[] = {
     {
         .name       = TYPE_R5F565NE_MCU,
@@ -551,6 +587,10 @@ static const TypeInfo rx65n_types[] = {
         .name       = TYPE_R5F565NH_MCU,
         .parent     = TYPE_RX65N_MCU,
         .class_init = r5f565nh_class_init,
+    }, {
+        .name       = TYPE_R5F5651C_MCU,
+        .parent     = TYPE_RX65N_MCU,
+        .class_init = r5f5651c_class_init,
     }, {
         .name          = TYPE_RX65N_MCU,
         .parent        = TYPE_DEVICE,

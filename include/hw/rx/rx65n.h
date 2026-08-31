@@ -49,6 +49,7 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 /* Concrete MCU variants */
 #define TYPE_R5F565NE_MCU   "r5f565ne-mcu"   /* 512 KB flash, 256 KB RAM */
 #define TYPE_R5F565NH_MCU   "r5f565nh-mcu"   /* 2 MB flash,   640 KB RAM */
+#define TYPE_R5F5651C_MCU   "r5f5651c-mcu"   /* 1.5 MB flash, 640 KB RAM */
 
 /* External chip-select base (for off-chip SDRAM/SRAM on board) */
 #define EXT_CS_BASE         0x01000000
@@ -79,6 +80,7 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
  */
 #define RX65N_CFLASH_BASE_512K  0xFFF80000
 #define RX65N_CFLASH_BASE_2M    0xFFE00000
+#define RX65N_CFLASH_BASE_1M5   0xFFE80000
 
 /* Peripheral base addresses (HW manual section 5) */
 #define RX65N_SYSTEM_BASE   0x00080000
@@ -115,7 +117,13 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
 /* Phase 1: minimal peripheral counts (extend in later phases) */
 #define RX65N_NR_TMR    2
 #define RX65N_NR_CMT    2
-#define RX65N_NR_SCI    1
+/*
+ * SCI0 to SCI9 sit in one contiguous block at 0x0008a000. SCI4 is the
+ * console; the rest exist so firmware using another channel finds real
+ * registers rather than an unmapped hole.
+ */
+#define RX65N_NR_SCI        10
+#define RX65N_SCI_CONSOLE   4
 
 struct RX65NState {
     /*< private >*/

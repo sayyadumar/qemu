@@ -286,6 +286,17 @@ static void rsk_rx65n_2mb_class_init(ObjectClass *oc, const void *data)
     mc->desc          = "Renesas Starter Kit+ for RX65N-2MB (R5F565NEH)";
 }
 
+static void rx651c_class_init(ObjectClass *oc, const void *data)
+{
+    RX65NEvkMachineClass *rxc = RX65N_EVK_MACHINE_CLASS(oc);
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    rxc->mcu_name     = TYPE_R5F5651C_MCU;
+    rxc->xtal_freq_hz = 12 * 1000 * 1000;
+    rxc->cflash_base  = RX65N_CFLASH_BASE_1M5;
+    mc->desc          = "Renesas RX651 (R5F5651C, 1.5 MB flash, 640 KB RAM)";
+}
+
 static const TypeInfo rx65n_evk_types[] = {
     {
         .name       = MACHINE_TYPE_NAME("rx65n-r5f565ne-evk"),
@@ -299,6 +310,10 @@ static const TypeInfo rx65n_evk_types[] = {
         .name       = MACHINE_TYPE_NAME("rsk-rx65n-2mb"),
         .parent     = TYPE_RX65N_EVK_MACHINE,
         .class_init = rsk_rx65n_2mb_class_init,
+    }, {
+        .name       = MACHINE_TYPE_NAME("rx651-r5f5651c"),
+        .parent     = TYPE_RX65N_EVK_MACHINE,
+        .class_init = rx651c_class_init,
     }, {
         .name          = TYPE_RX65N_EVK_MACHINE,
         .parent        = TYPE_MACHINE,
