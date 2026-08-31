@@ -336,6 +336,7 @@ static void register_fcu(RX65NState *s, RX65NClass *rxc)
     sysbus_mmio_map(fcu, RX_FCU_MMIO_CFLASH, s->cflash_base);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_DFLASH, RX65N_DFLASH_BASE);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_OFSM, RX65N_OFSM_BASE);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_FACI, RX_FCU_FACI_ISSUE_BASE);
 
     sysbus_connect_irq(fcu, RX_FCU_IRQ_FRDYI,
                        qdev_get_gpio_in(DEVICE(&s->icu), RX65N_FCU_FRDYI));

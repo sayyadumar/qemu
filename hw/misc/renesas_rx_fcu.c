@@ -349,17 +349,66 @@ static void faci_flash_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
 {
     RxFcuFlash *f = opaque;
-    RenesasRxFcuState *s = f->fcu;
 
-    if (!target_in_pe_mode(s, f->target)) {
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "renesas-rx-fcu: write to the %s flash array @0x%"
+                  HWADDR_PRIx "; FACI commands are issued to 0x%08x\n",
+                  f->target == RX_FCU_CFLASH ? "code" : "data", offset,
+                  RX_FCU_FACI_ISSUE_BASE);
+}
+
+/*
+ * The FACI command-issuing area. Every FACI command byte and every data word
+ * is written here, four bytes at 0x007E0000, rather than to the flash array;
+ * the destination inside the array comes from FSADDR. The array itself is
+ * not writable, so a write there is a guest error rather than a command.
+ */
+static void faci_issue_write(void *opaque, hwaddr offset, uint64_t value,
+                             unsigned size)
+{
+    RenesasRxFcuState *s = opaque;
+    RxFcuTarget t;
+    uint32_t off;
+
+    if (target_in_pe_mode(s, RX_FCU_CFLASH)) {
+        t = RX_FCU_CFLASH;
+    } else if (target_in_pe_mode(s, RX_FCU_DFLASH)) {
+        t = RX_FCU_DFLASH;
+    } else {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "renesas-rx-fcu: write to %s flash @0x%" HWADDR_PRIx
-                      " while not in P/E mode\n",
-                      f->target == RX_FCU_CFLASH ? "code" : "data", offset);
+                      "renesas-rx-fcu: FACI command 0x%02x issued while "
+                      "neither array is in P/E mode\n", (uint8_t)value);
         return;
     }
-    faci_command(s, f->target, offset, value, size);
+
+    /*
+     * Only the command that opens a sequence needs an address; the count,
+     * data words and confirmation that follow continue where it left off.
+     */
+    if (s->cmd_state == RX_FCU_ST_READY &&
+        !addr_to_offset(s, t, s->fsaddr, &off)) {
+        off = 0;
+    } else {
+        off = s->prog_off;
+    }
+    faci_command(s, t, off, value, size);
 }
+
+static uint64_t faci_issue_read(void *opaque, hwaddr offset, unsigned size)
+{
+    /* The command-issuing area is write-only; reads are undefined. */
+    return 0;
+}
+
+static const MemoryRegionOps faci_issue_ops = {
+    .read = faci_issue_read,
+    .write = faci_issue_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+};
 
 static const MemoryRegionOps faci_flash_ops = {
     .read = faci_flash_read,
@@ -676,6 +725,8 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
 
     memory_region_init_io(&s->regs_mr, OBJECT(s), &fcu_regs_ops, s,
                           "renesas-rx-fcu.regs", RX_FCU_REGS_SIZE);
+    memory_region_init_io(&s->faci_mr, OBJECT(s), &faci_issue_ops, s,
+                          "renesas-rx-fcu.faci", RX_FCU_FACI_ISSUE_SIZE);
 
     if (!memory_region_init_rom_device(&s->cflash_mr, OBJECT(s),
                                        &faci_flash_ops, &s->cflash_ctx,
@@ -771,6 +822,7 @@ static void rx_fcu_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &s->cflash_container);
     sysbus_init_mmio(sbd, &s->dflash_mr);
     sysbus_init_mmio(sbd, &s->ofsm_mr);
+    sysbus_init_mmio(sbd, &s->faci_mr);
     sysbus_init_irq(sbd, &s->frdyi);
     sysbus_init_irq(sbd, &s->fiferr);
 }

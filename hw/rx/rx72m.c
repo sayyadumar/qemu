@@ -389,6 +389,7 @@ static void register_fcu(RX72MState *s, RX72MClass *rxc)
     sysbus_mmio_map(fcu, RX_FCU_MMIO_CFLASH, s->cflash_base);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_DFLASH, RX72M_DFLASH_BASE);
     sysbus_mmio_map(fcu, RX_FCU_MMIO_OFSM, RX72M_OFSM_BASE);
+    sysbus_mmio_map(fcu, RX_FCU_MMIO_FACI, RX_FCU_FACI_ISSUE_BASE);
 
     sysbus_connect_irq(fcu, RX_FCU_IRQ_FRDYI,
                        qdev_get_gpio_in(DEVICE(&s->icu), RX72M_FCU_FRDYI));

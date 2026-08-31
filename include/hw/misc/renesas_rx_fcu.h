@@ -35,6 +35,13 @@ DECLARE_INSTANCE_CHECKER(RenesasRxFcuState, RENESAS_RX_FCU, TYPE_RENESAS_RX_FCU)
 #define RX_FCU_REGS_SIZE    0x1000
 
 /*
+ * FACI command-issuing area: every command byte and data word is written
+ * here, and the destination inside the flash comes from FSADDR.
+ */
+#define RX_FCU_FACI_ISSUE_BASE  0x007E0000
+#define RX_FCU_FACI_ISSUE_SIZE  4
+
+/*
  * Option-setting memory (OFSM). It sits apart from the code flash array and
  * holds, among other things, the two registers that select the code flash
  * bank layout.
@@ -66,6 +73,7 @@ enum {
     RX_FCU_MMIO_CFLASH,     /* code flash array (rom_device)      */
     RX_FCU_MMIO_DFLASH,     /* data flash array (rom_device)      */
     RX_FCU_MMIO_OFSM,       /* option-setting memory              */
+    RX_FCU_MMIO_FACI,       /* FACI command-issuing area          */
     RX_FCU_NR_MMIO,
 };
 
@@ -109,6 +117,7 @@ struct RenesasRxFcuState {
     MemoryRegion cflash_mr;     /* backing store, reached through the aliases */
     MemoryRegion dflash_mr;
     MemoryRegion ofsm_mr;
+    MemoryRegion faci_mr;
 
     /*
      * The code flash is exposed through a container so the two dual-mode

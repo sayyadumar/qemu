@@ -16,6 +16,8 @@ import tempfile
 from qemu_test import QemuSystemTest
 
 FCU_BASE = 0x007FE000
+FACI_BASE = 0x007E0000      # FACI command-issuing area
+R_FSADDR = 0x30             # FACI command start address register
 DFLASH_BASE = 0x00100000
 CFLASH_BASE = 0xFFF80000
 CFLASH_SIZE = 512 * 1024
@@ -54,6 +56,36 @@ def make_bank_half(marker):
     blob[0:len(code)] = code
     struct.pack_into('<I', blob, 1024 * 1024 - 4, 0xFFE00000)
     return bytes(blob)
+
+
+def faci_setup(dest, pe_bits=0x80):
+    """
+    Enter P/E mode for the selected array and point FSADDR at dest.
+
+    R1 addresses the FACI register block throughout. FENTRYR at +0x84 is a
+    word register and FSADDR at +0x30 a long one, and the encoded
+    displacement is scaled by the access size, hence 0x42 and 0x0c.
+    """
+    code = bytes([0xFB, 0x12]) + u32(FCU_BASE)
+    code += bytes([0xF9, 0x19, 0x42, pe_bits, 0xAA])   # FENTRYR = key | array
+    code += bytes([0xF9, 0x12, 0x0C]) + u32(dest)      # FSADDR = dest
+    code += bytes([0xFB, 0x32]) + u32(FACI_BASE)       # R3 = command-issuing
+    return code
+
+
+def faci_byte(value):
+    """Write one command byte to the FACI command-issuing area."""
+    return bytes([0xF9, 0x34, 0x00, value])
+
+
+def faci_word(value):
+    """Write one 16-bit data word to the FACI command-issuing area."""
+    return bytes([0xF9, 0x39, 0x00, value & 0xff, (value >> 8) & 0xff])
+
+
+def faci_leave():
+    """Leave P/E mode so the array reads normally again."""
+    return bytes([0xF9, 0x19, 0x42, 0x00, 0xAA])
 
 
 def last_cpu_state(log):
@@ -122,34 +154,27 @@ class RXFcuMachine(QemuSystemTest):
 
     def test_faci_program_data_flash(self):
         """
-        Drive a full FACI program sequence against the data flash: enter P/E
-        mode through FENTRYR, issue the program command with a word count and
-        one data word, confirm, leave P/E mode and read the value back.
-
-        Programming can only clear bits, so writing 0x1234 into an erased
-        half word leaves 0xffff1234 in the first long word.
+        Drive a full FACI program sequence. Commands and data go to the
+        command-issuing area at 0x007E0000, not to the flash array; the
+        destination comes from FSADDR. Data flash takes two 16-bit words per
+        program command.
         """
         self.set_machine('rx65n-r5f565ne-evk')
 
-        code = b''
-        code += bytes([0xFB, 0x12]) + u32(FCU_BASE)      # R1 = FCU base
-        # FENTRYR at +0x84 is a word register, and the encoded displacement
-        # is scaled by the access size, so 0x84 is written as 0x42.
-        code += bytes([0xF9, 0x19, 0x42, 0x80, 0xAA])    # FENTRYR = key | DF
-        code += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)   # R3 = data flash
-        code += bytes([0xF9, 0x34, 0x00, 0xE8])          # program command
-        code += bytes([0xF9, 0x34, 0x00, 0x01])          # one 16-bit word
-        code += bytes([0xF9, 0x39, 0x00, 0x34, 0x12])    # the data word
-        code += bytes([0xF9, 0x34, 0x00, 0xD0])          # confirm
-        code += bytes([0xF9, 0x19, 0x42, 0x00, 0xAA])    # leave P/E mode
-        code += bytes([0xA8, 0x34])                      # R4 = *R3
+        code = faci_setup(DFLASH_BASE)
+        code += faci_byte(0xE8)          # program
+        code += faci_byte(0x02)          # two data words
+        code += faci_word(0x1234)
+        code += faci_word(0x5678)
+        code += faci_byte(0xD0)          # confirm
+        code += faci_leave()
+        code += bytes([0xFB, 0x52]) + u32(DFLASH_BASE)
+        code += bytes([0xA8, 0x56])      # R6 = first long of the data flash
         code += bytes([0x2E, 0x00])
 
         log = self.run_image(make_image(code))
-        # The sequence should be accepted without the FCU complaining.
         self.assertNotIn('renesas-rx-fcu:', log)
-        self.assertIn('r4=0xffff1234', self.final_state(log))
-
+        self.assertIn('r6=0x56781234', last_cpu_state(log))
 
     def test_fcmdr_records_command_pair(self):
         """
@@ -159,20 +184,17 @@ class RXFcuMachine(QemuSystemTest):
         """
         self.set_machine('rx65n-r5f565ne-evk')
 
-        code = b''
-        code += bytes([0xFB, 0x12]) + u32(FCU_BASE)
-        code += bytes([0xF9, 0x19, 0x42, 0x80, 0xAA])   # FENTRYR = key | DF
-        code += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
-        code += bytes([0xF9, 0x34, 0x00, 0x20])         # block erase
-        code += bytes([0xF9, 0x34, 0x00, 0xD0])         # confirm
-        code += bytes([0xF9, 0x19, 0x42, 0x00, 0xAA])   # leave P/E mode
+        code = faci_setup(DFLASH_BASE)
+        code += faci_byte(0x20)          # block erase
+        code += faci_byte(0xD0)          # confirm
+        code += faci_leave()
         code += bytes([0xFB, 0x52]) + u32(FCU_BASE + 0xA0)
-        code += bytes([0xA8, 0x56])                     # R6 = FCMDR
+        code += bytes([0xA8, 0x56])      # R6 = FCMDR
         code += bytes([0x2E, 0x00])
 
         log = self.run_image(make_image(code))
         self.assertNotIn('renesas-rx-fcu:', log)
-        self.assertIn('r6=0x000020d0', self.final_state(log))
+        self.assertIn('r6=0x000020d0', last_cpu_state(log))
 
     def test_data_flash_persists_across_runs(self):
         """
@@ -186,35 +208,33 @@ class RXFcuMachine(QemuSystemTest):
             dflash = f.name
         try:
             # First run programs 0x1234 into the first half word.
-            code = b''
-            code += bytes([0xFB, 0x12]) + u32(FCU_BASE)
-            code += bytes([0xF9, 0x19, 0x42, 0x80, 0xAA])
-            code += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
-            code += bytes([0xF9, 0x34, 0x00, 0xE8])
-            code += bytes([0xF9, 0x34, 0x00, 0x01])
-            code += bytes([0xF9, 0x39, 0x00, 0x34, 0x12])
-            code += bytes([0xF9, 0x34, 0x00, 0xD0])
-            code += bytes([0xF9, 0x19, 0x42, 0x00, 0xAA])
-            code += bytes([0xA8, 0x34])
+            code = faci_setup(DFLASH_BASE)
+            code += faci_byte(0xE8)
+            code += faci_byte(0x02)
+            code += faci_word(0x1234)
+            code += faci_word(0x5678)
+            code += faci_byte(0xD0)
+            code += faci_leave()
+            code += bytes([0xFB, 0x52]) + u32(DFLASH_BASE)
+            code += bytes([0xA8, 0x56])
             code += bytes([0x2E, 0x00])
             log = self.run_image(make_image(code), drives=((1, dflash),))
-            self.assertIn('r4=0xffff1234', self.final_state(log))
+            self.assertIn('r6=0x56781234', last_cpu_state(log))
 
             # It reached the image on disk.
             with open(dflash, 'rb') as f:
-                self.assertEqual(f.read(4), b'\x34\x12\xff\xff')
+                self.assertEqual(f.read(4), b'\x34\x12\x78\x56')
 
             # A second, read-only firmware sees it in a fresh QEMU.
-            readback = b''
-            readback += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
-            readback += bytes([0xA8, 0x34])
+            readback = bytes([0xFB, 0x52]) + u32(DFLASH_BASE)
+            readback += bytes([0xA8, 0x56])
             readback += bytes([0x2E, 0x00])
             log = self.run_image(make_image(readback), drives=((1, dflash),))
-            self.assertIn('r4=0xffff1234', self.final_state(log))
+            self.assertIn('r6=0x56781234', last_cpu_state(log))
 
             # Without the drive the array is erased again.
             log = self.run_image(make_image(readback))
-            self.assertIn('r4=0xffffffff', self.final_state(log))
+            self.assertIn('r6=0xffffffff', last_cpu_state(log))
         finally:
             os.unlink(dflash)
 
