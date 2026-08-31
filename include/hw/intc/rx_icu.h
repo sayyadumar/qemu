@@ -61,6 +61,9 @@ enum {
 #define RX_ICU_GRP_BITS         32
 #define RX_ICU_NR_GRP_IN        (RX_ICU_NR_GROUPS * RX_ICU_GRP_BITS)
 
+/* ipr-map entry for a vector that has no interrupt priority register. */
+#define RX_ICU_IPR_NONE 0xff
+
 struct RXICUState {
     /*< private >*/
     SysBusDevice parent_obj;
@@ -76,7 +79,12 @@ struct RXICUState {
     uint8_t ir[NR_IRQS];
     uint8_t dtcer[NR_IRQS];
     uint8_t ier[NR_IRQS / 8];
-    uint8_t ipr[142];
+    /*
+     * IPR000 to IPR255. RX62N only defines the first 144, but RX65N assigns
+     * an IPR number equal to the vector number for most sources, so the
+     * array is sized for the architectural maximum.
+     */
+    uint8_t ipr[256];
     uint8_t dmasr[4];
     uint16_t fir;
     uint8_t nmisr;

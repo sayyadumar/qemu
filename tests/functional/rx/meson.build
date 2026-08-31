@@ -5,4 +5,5 @@ tests_rx_system_thorough = [
   'rx65n',
   'rxv3',
   'fcu',
+  'icu',
 ]

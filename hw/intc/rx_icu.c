@@ -86,7 +86,11 @@ static uint8_t rxicu_ipr(RXICUState *icu, unsigned n)
 {
     uint8_t idx = icu->map[n];
 
-    return idx < ARRAY_SIZE(icu->ipr) ? icu->ipr[idx] : 0;
+    QEMU_BUILD_BUG_ON(ARRAY_SIZE(((RXICUState *)0)->ipr) <= UINT8_MAX);
+    if (idx == RX_ICU_IPR_NONE) {
+        return 0;
+    }
+    return icu->ipr[idx];
 }
 
 static uint16_t rxicu_level(RXICUState *icu, unsigned n)
@@ -289,7 +293,7 @@ static uint64_t icu_read(void *opaque, hwaddr addr, unsigned size)
         return 0;
     case A_FIR:
         return icu->fir & (R_FIR_FIEN_MASK | R_FIR_FVCT_MASK);
-    case A_IPR ... A_IPR + 0x8f:
+    case A_IPR ... A_IPR + 0xff:
         return icu->ipr[reg] & R_IPR_IPR_MASK;
     case A_DMRSR:
     case A_DMRSR + 4:
@@ -361,7 +365,7 @@ static void icu_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     case A_FIR:
         icu->fir = val & (R_FIR_FIEN_MASK | R_FIR_FVCT_MASK);
         break;
-    case A_IPR ... A_IPR + 0x8f:
+    case A_IPR ... A_IPR + 0xff:
         icu->ipr[reg] = val & R_IPR_IPR_MASK;
         rxicu_reeval(icu);
         break;
@@ -463,7 +467,7 @@ static const VMStateDescription vmstate_rxicu = {
         VMSTATE_UINT8_ARRAY(ir, RXICUState, NR_IRQS),
         VMSTATE_UINT8_ARRAY(dtcer, RXICUState, NR_IRQS),
         VMSTATE_UINT8_ARRAY(ier, RXICUState, NR_IRQS / 8),
-        VMSTATE_UINT8_ARRAY(ipr, RXICUState, 142),
+        VMSTATE_UINT8_ARRAY(ipr, RXICUState, 256),
         VMSTATE_UINT8_ARRAY(dmasr, RXICUState, 4),
         VMSTATE_UINT16(fir, RXICUState),
         VMSTATE_UINT8(nmisr, RXICUState),
