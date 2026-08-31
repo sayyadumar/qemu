@@ -208,6 +208,21 @@ static void register_cmt(RX65NState *s, int unit)
     sysbus_mmio_map(cmt, 0, RX65N_CMT_BASE + unit * 0x10);
 }
 
+/*
+ * Start-up code enables the ROM cache and spins until the enable reads back,
+ * so this has to exist before anything else in the firmware can run.
+ */
+static void register_romcache(RX65NState *s)
+{
+    SysBusDevice *rc;
+
+    object_initialize_child(OBJECT(s), "romcache", &s->romcache,
+                            TYPE_RENESAS_RX_ROMCACHE);
+    rc = SYS_BUS_DEVICE(&s->romcache);
+    sysbus_realize(rc, &error_abort);
+    sysbus_mmio_map(rc, 0, RX65N_ROMCACHE_BASE);
+}
+
 static void register_crc(RX65NState *s)
 {
     SysBusDevice *crc;
@@ -540,6 +555,7 @@ static void rx65n_realize(DeviceState *dev, Error **errp)
     register_tmr(s, 1);
     register_cmt(s, 0);
     register_cmt(s, 1);
+    register_romcache(s);
     register_crc(s);
     for (int i = 0; i < RX65N_NR_SCI; i++) {
         register_sci(s, i);
