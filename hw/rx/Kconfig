@@ -25,6 +25,7 @@ config RX65N_MCU
     select RX65N_SYSCLK
     select RENESAS_RX_FCU
     select RENESAS_RX_CRC
+    select RENESAS_RX_ROMCACHE
     select RENESAS_RX_GPIO
     select RENESAS_RX_DMAC
     select RENESAS_RX_DTC
@@ -55,6 +56,7 @@ config RX72M_MCU
     select RX65N_SYSCLK
     select RENESAS_RX_FCU
     select RENESAS_RX_CRC
+    select RENESAS_RX_ROMCACHE
     select RENESAS_RX_GPIO
     select RENESAS_RX_DMAC
     select RENESAS_RX_DTC

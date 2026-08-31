@@ -195,5 +195,58 @@ class RXCrcMachine(QemuSystemTest):
         self.assertIn('r2=0x0000a5a5', self.run_asm(a))
 
 
+
+class RXRomCacheMachine(QemuSystemTest):
+    """
+    Start-up code enables the ROM cache and spins until the enable register
+    reads back, so without a device at 0x00081000 the machine hangs before
+    anything else in the firmware runs.
+    """
+
+    timeout = 30
+
+    def test_romce_readback_releases_the_spin(self):
+        self.set_machine('rx651-r5f5651c')
+
+        ROMCE = 0x00081000
+        a = Asm()
+        a.movi(ROMCE, 1)
+        a._put(0xF9, 0x19, 0x00, 0x01, 0x00)      # FLASH.ROMCE.WORD = 1
+        loop = len(a.code)
+        a._put(0xB8, 0x12)                        # MOVU.W [R1], R2
+        a._put(0x61, 0x12)                        # CMP #1, R2
+        here = len(a.code)
+        a._put(0x21, (loop - here) & 0xFF)        # BNE loop
+        a.movi(0x00C0FFEE, 7)                     # reached only past the spin
+        a.spin()
+
+        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+            f.write(a.image())
+            path = f.name
+        try:
+            cmd = [self.qemu_bin, '-machine', 'rx651-r5f5651c', '-bios', path,
+                   '-nographic', '-d', 'cpu,unimp']
+            try:
+                proc = subprocess.run(cmd, capture_output=True, timeout=10,
+                                      text=True, errors='replace')
+                out = proc.stdout + proc.stderr
+            except subprocess.TimeoutExpired as exc:
+                o = exc.stdout or ''
+                e = exc.stderr or ''
+                if isinstance(o, bytes):
+                    o = o.decode(errors='replace')
+                if isinstance(e, bytes):
+                    e = e.decode(errors='replace')
+                out = o + e
+        finally:
+            os.unlink(path)
+
+        # The ROM cache registers must be a real device, not the catch-all.
+        self.assertNotIn('unimplemented device', out)
+        parts = re.split(r'^pc=', out, flags=re.M)
+        self.assertGreater(len(parts), 1, 'no CPU state dump in log')
+        self.assertIn('r7=0x00c0ffee', 'pc=' + parts[-1])
+
+
 if __name__ == '__main__':
     QemuSystemTest.main()
