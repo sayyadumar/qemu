@@ -90,12 +90,15 @@
 #define FACI_CMD_PROGRAM     0xE8
 #define FACI_CMD_BLOCK_ERASE 0x20
 #define FACI_CMD_BLANK_CHECK 0x71
+#define FACI_CMD_CONFIG_SET  0x40
 #define FACI_CMD_CLEAR_STAT  0x50
 #define FACI_CMD_FORCED_STOP 0xB3
 #define FACI_CMD_CONFIRM     0xD0
 
 /* Erase block granularity (HW manual section 6). */
 #define CFLASH_ERASE_BLOCK   0x8000     /* 32 KiB code flash block     */
+#define CFLASH_SMALL_BLOCK   0x2000     /* 8 KiB block, blocks 0 to 7  */
+#define CFLASH_SMALL_REGION  0x10000    /* the eight small blocks span 64 KiB */
 #define DFLASH_ERASE_BLOCK   0x40       /* 64-byte data flash block    */
 
 static bool target_in_pe_mode(RenesasRxFcuState *s, RxFcuTarget t)
@@ -124,7 +127,38 @@ static bool addr_to_offset(RenesasRxFcuState *s, RxFcuTarget t,
         return false;
     }
     *off = addr - base;
+
+    /*
+     * "When the address is switched by using startup bank selection, the P/E
+     * target for the FACI commands is also switched." The address the guest
+     * puts in FSADDR is a bus address, so with the banks exchanged it has to
+     * be translated to the physical half the same way the memory aliases do.
+     */
+    if (t == RX_FCU_CFLASH && s->bank_swapped) {
+        uint32_t hsz = s->cflash_size / 2;
+        *off = *off < hsz ? *off + hsz : *off - hsz;
+    }
     return true;
+}
+
+/*
+ * Code flash erase blocks are not uniform: the top 64 KB of each bank (of the
+ * whole array in linear mode) is eight 8 KB blocks, and everything below is
+ * 32 KB blocks. Return the block containing a physical offset.
+ */
+static void cflash_erase_block(RenesasRxFcuState *s, uint32_t off,
+                               uint32_t *start, uint32_t *len)
+{
+    uint32_t unit = s->dual_mode ? s->cflash_size / 2 : s->cflash_size;
+    uint32_t within = off % unit;
+    uint32_t base = off - within;
+
+    if (within >= unit - CFLASH_SMALL_REGION) {
+        *len = CFLASH_SMALL_BLOCK;
+    } else {
+        *len = CFLASH_ERASE_BLOCK;
+    }
+    *start = base + (within & ~(*len - 1));
 }
 
 /*
@@ -157,6 +191,17 @@ static void faci_illegal(RenesasRxFcuState *s)
     s->fastat |= FASTAT_CMDLK;
     if (s->faeint) {
         qemu_set_irq(s->fiferr, 1);
+    }
+}
+
+/* Write the option-setting memory back to its image, if one is attached. */
+static void fcu_ofsm_sync(RenesasRxFcuState *s)
+{
+    if (!s->ofsm_blk || s->ofsm_ro) {
+        return;
+    }
+    if (blk_pwrite(s->ofsm_blk, 0, RX_FCU_OFSM_SIZE, s->ofsm_ptr, 0) < 0) {
+        error_report("renesas-rx-fcu: could not write the OFSM image");
     }
 }
 
@@ -194,10 +239,15 @@ static void fcu_flash_sync(RenesasRxFcuState *s, RxFcuTarget t,
 
 static void faci_block_erase(RenesasRxFcuState *s, RxFcuTarget t, uint32_t off)
 {
-    uint32_t block = t == RX_FCU_CFLASH ? CFLASH_ERASE_BLOCK
-                                        : DFLASH_ERASE_BLOCK;
-    uint32_t start = off & ~(block - 1);
     uint32_t size = target_size(s, t);
+    uint32_t block, start;
+
+    if (t == RX_FCU_CFLASH) {
+        cflash_erase_block(s, off, &start, &block);
+    } else {
+        block = DFLASH_ERASE_BLOCK;
+        start = off & ~(block - 1);
+    }
 
     if (start >= size) {
         faci_illegal(s);
@@ -263,6 +313,15 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
             s->cmd_target = t;
             s->cmd_state = RX_FCU_ST_BLANKCHECK;
             break;
+        case FACI_CMD_CONFIG_SET:
+            /*
+             * Configuration set writes one 16-byte row of the option-setting
+             * memory. FSADDR selects the row: its low byte is the offset
+             * within the OFSM, so 0x00ff5d20 reaches BANKSEL at +0x20.
+             */
+            s->cfg_off = s->fsaddr & (RX_FCU_OFSM_SIZE - 1) & ~0xfu;
+            s->cmd_state = RX_FCU_ST_CONFIG_COUNT;
+            break;
         case FACI_CMD_CLEAR_STAT:
             s->fstatr = (s->fstatr & ~FSTATR_ERRORS) | FSTATR_FRDY;
             s->fastat &= ~FASTAT_CMDLK;
@@ -277,6 +336,29 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
         default:
             faci_illegal(s);
             break;
+        }
+        break;
+
+    case RX_FCU_ST_CONFIG_COUNT:
+        /* Always eight 16-bit words, i.e. the 16-byte row. */
+        s->prog_words = value & 0xff;
+        s->cmd_state = RX_FCU_ST_CONFIG_DATA;
+        break;
+
+    case RX_FCU_ST_CONFIG_DATA:
+        if (s->prog_words > 0) {
+            if (s->cfg_off + 2 <= RX_FCU_OFSM_SIZE) {
+                /* Like the arrays, programming can only clear bits. */
+                uint16_t cur = lduw_le_p(s->ofsm_ptr + s->cfg_off);
+                stw_le_p(s->ofsm_ptr + s->cfg_off, cur & (uint16_t)value);
+            }
+            s->cfg_off += 2;
+            s->prog_words--;
+        } else if (cmd == FACI_CMD_CONFIRM) {
+            fcu_ofsm_sync(s);
+            faci_complete(s);
+        } else {
+            faci_illegal(s);
         }
         break;
 

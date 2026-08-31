@@ -327,5 +327,85 @@ class RXDualBankMachine(QemuSystemTest):
         self.assertIn('r1=0xb0b0b0b0', state)
 
 
+
+    def test_guest_switches_bank_via_config_set(self):
+        """
+        The whole update flow, driven by the guest: firmware running from one
+        bank issues a configuration set command to program BANKSEL, and the
+        next reset comes up in the other bank.
+
+        Configuration set writes one 16-byte row of the option-setting
+        memory, selected by FSADDR; 0x00ff5d20 is the row holding BANKSEL.
+        """
+        self.set_machine('rsk-rx65n-2mb')
+
+        # The low half asks for the swap; the high half just identifies itself.
+        swapper = bytes([0xFB, 0x12]) + u32(0x11111111)
+        swapper += bytes([0xFB, 0x22]) + u32(FCU_BASE)
+        swapper += bytes([0xF9, 0x29, 0x42, 0x01, 0xAA])   # code flash P/E
+        swapper += bytes([0xF9, 0x22, 0x0C]) + u32(0x00FF5D20)
+        swapper += bytes([0xFB, 0x32]) + u32(FACI_BASE)
+        swapper += bytes([0xF9, 0x34, 0x00, 0x40])         # configuration set
+        swapper += bytes([0xF9, 0x34, 0x00, 0x08])         # eight words
+        swapper += bytes([0xF9, 0x39, 0x00, 0xF8, 0xFF])   # BANKSWP = 000b
+        swapper += bytes([0xF9, 0x39, 0x00, 0xFF, 0xFF]) * 7
+        swapper += bytes([0xF9, 0x34, 0x00, 0xD0])         # confirm
+        swapper += bytes([0xF9, 0x29, 0x42, 0x00, 0xAA])   # leave P/E mode
+        swapper += bytes([0x2E, 0x00])
+
+        def pad_half(code):
+            blob = bytearray(b'\xff' * (1024 * 1024))
+            blob[0:len(code)] = code
+            struct.pack_into('<I', blob, 1024 * 1024 - 4, 0xFFE00000)
+            return bytes(blob)
+
+        other = bytes([0xFB, 0x12]) + u32(0xB0B0B0B0) + bytes([0x2E, 0x00])
+        cflash = pad_half(swapper) + pad_half(other)
+
+        ofsm = bytearray(b'\xff' * 512)
+        struct.pack_into('<I', ofsm, 0x00, 0xfffffff8)   # dual mode
+        # BANKSEL left erased, so BANKSWP starts at 111b.
+
+        with tempfile.NamedTemporaryFile(suffix='.img', delete=False) as f:
+            f.write(cflash)
+            cf = f.name
+        with tempfile.NamedTemporaryFile(suffix='.img', delete=False) as f:
+            f.write(bytes(ofsm))
+            of = f.name
+        try:
+            def run():
+                cmd = [self.qemu_bin, '-machine', 'rsk-rx65n-2mb',
+                       '-nographic', '-d', 'cpu,guest_errors',
+                       '-drive', 'if=pflash,unit=0,format=raw,file=%s' % cf,
+                       '-drive', 'if=pflash,unit=2,format=raw,file=%s' % of]
+                try:
+                    p = subprocess.run(cmd, capture_output=True, timeout=10,
+                                       text=True, errors='replace')
+                    return p.stdout + p.stderr
+                except subprocess.TimeoutExpired as exc:
+                    o = exc.stdout or ''
+                    e = exc.stderr or ''
+                    if isinstance(o, bytes):
+                        o = o.decode(errors='replace')
+                    if isinstance(e, bytes):
+                        e = e.decode(errors='replace')
+                    return o + e
+
+            log = run()
+            self.assertNotIn('renesas-rx-fcu:', log)
+            self.assertIn('r1=0x11111111', last_cpu_state(log))
+            # BANKSEL now reads BANKSWP = 000b.
+            with open(of, 'rb') as f:
+                f.seek(0x20)
+                self.assertEqual(f.read(4), b'\xf8\xff\xff\xff')
+
+            # The next boot comes up in the other bank.
+            log = run()
+            self.assertIn('r1=0xb0b0b0b0', last_cpu_state(log))
+        finally:
+            os.unlink(cf)
+            os.unlink(of)
+
+
 if __name__ == '__main__':
     QemuSystemTest.main()

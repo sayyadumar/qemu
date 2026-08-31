@@ -106,6 +106,8 @@ typedef enum {
     RX_FCU_ST_PROGRAM_DATA,     /* receiving data words, then 0xD0     */
     RX_FCU_ST_ERASE,            /* awaiting the 0xD0 confirmation      */
     RX_FCU_ST_BLANKCHECK,       /* awaiting the 0xD0 confirmation      */
+    RX_FCU_ST_CONFIG_COUNT,     /* awaiting the config data-word count */
+    RX_FCU_ST_CONFIG_DATA,      /* receiving config words, then 0xD0   */
 } RxFcuCmdState;
 
 struct RenesasRxFcuState {
@@ -147,6 +149,7 @@ struct RenesasRxFcuState {
     uint8_t *ofsm_ptr;
 
     /* Code flash bank layout latched at reset from the OFSM. */
+    uint32_t cfg_off;           /* OFSM offset for a configuration set  */
     bool dual_mode;
     bool bank_swapped;
 
