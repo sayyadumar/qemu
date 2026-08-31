@@ -63,7 +63,12 @@ DECLARE_INSTANCE_CHECKER(RX65NState, RX65N_MCU, TYPE_RX65N_MCU)
  * with more than 512 KB of SRAM (e.g. the 640 KB part) place the remainder in
  * a separate expansion SRAM region at 0x00800000.
  */
-#define RX65N_SRAM_MAX      (512 * 1024)
+/*
+ * On-chip SRAM at address 0 is 256 KB on every RX65N/RX651 part. The
+ * 640 KB variants carry the remaining 384 KB as expansion RAM at
+ * 0x00800000, so the split is fixed rather than a function of the total.
+ */
+#define RX65N_SRAM_MAX      (256 * 1024)
 #define RX65N_EXRAM_BASE    0x00800000
 #define RX65N_DFLASH_BASE   0x00100000
 /*
