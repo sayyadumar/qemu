@@ -120,6 +120,29 @@ class RXFcuMachine(QemuSystemTest):
         self.assertIn('r4=0xffff1234', self.final_state(log))
 
 
+    def test_fcmdr_records_command_pair(self):
+        """
+        FCMDR pairs the command just received (CMDR, low byte) with the one
+        before it (PCMDR, high byte), so the two-byte block erase sequence
+        leaves 0x20d0 behind.
+        """
+        self.set_machine('rx65n-r5f565ne-evk')
+
+        code = b''
+        code += bytes([0xFB, 0x12]) + u32(FCU_BASE)
+        code += bytes([0xF9, 0x19, 0x42, 0x80, 0xAA])   # FENTRYR = key | DF
+        code += bytes([0xFB, 0x32]) + u32(DFLASH_BASE)
+        code += bytes([0xF9, 0x34, 0x00, 0x20])         # block erase
+        code += bytes([0xF9, 0x34, 0x00, 0xD0])         # confirm
+        code += bytes([0xF9, 0x19, 0x42, 0x00, 0xAA])   # leave P/E mode
+        code += bytes([0xFB, 0x52]) + u32(FCU_BASE + 0xA0)
+        code += bytes([0xA8, 0x56])                     # R6 = FCMDR
+        code += bytes([0x2E, 0x00])
+
+        log = self.run_image(make_image(code))
+        self.assertNotIn('renesas-rx-fcu:', log)
+        self.assertIn('r6=0x000020d0', self.final_state(log))
+
     def test_data_flash_persists_across_runs(self):
         """
         A data flash image supplied with -drive keeps what the guest

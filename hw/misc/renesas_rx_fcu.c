@@ -126,6 +126,18 @@ static bool addr_to_offset(RenesasRxFcuState *s, RxFcuTarget t,
     return true;
 }
 
+/*
+ * FCMDR pairs the command just received (CMDR, low byte) with the one before
+ * it (PCMDR, high byte). A two-byte sequence such as block erase therefore
+ * ends up reading 0x20d0: 0x20 shifted up by the 0xd0 confirm. The confirm
+ * that terminates a programming sequence is not recorded, which is why the
+ * manual lists programming as leaving CMDR at 0xe8.
+ */
+static void faci_set_cmdr(RenesasRxFcuState *s, uint8_t cmd)
+{
+    s->fcmdr = ((s->fcmdr & 0xff) << 8) | cmd;
+}
+
 /* Finish a command: report ready and pulse the ready interrupt if enabled. */
 static void faci_complete(RenesasRxFcuState *s)
 {
@@ -232,7 +244,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
 
     switch (s->cmd_state) {
     case RX_FCU_ST_READY:
-        s->fcmdr = cmd;
+        faci_set_cmdr(s, cmd);
         switch (cmd) {
         case FACI_CMD_PROGRAM:
             s->cmd_target = t;
@@ -294,6 +306,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
 
     case RX_FCU_ST_ERASE:
         if (cmd == FACI_CMD_CONFIRM) {
+            faci_set_cmdr(s, cmd);
             faci_block_erase(s, s->cmd_target, s->prog_off);
         } else {
             faci_illegal(s);
@@ -302,6 +315,7 @@ static void faci_command(RenesasRxFcuState *s, RxFcuTarget t,
 
     case RX_FCU_ST_BLANKCHECK:
         if (cmd == FACI_CMD_CONFIRM) {
+            faci_set_cmdr(s, cmd);
             faci_blank_check(s, s->cmd_target);
         } else {
             faci_illegal(s);
