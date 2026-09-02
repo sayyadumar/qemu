@@ -249,8 +249,6 @@ static void connect_power_reduction_gpio(AtmegaMcuState *s,
                                          unsigned peripheral_index)
 {
     unsigned power_index = k->dev[peripheral_index].power_index;
-    printf("power_index=%u for peripheral_index=%u\n",
-           power_index, peripheral_index);
     assert(k->dev[power_index].addr);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->pwr[power_index - POWER0]),
                        k->dev[peripheral_index].power_bit,
