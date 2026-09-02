@@ -36,3 +36,7 @@ config ALLWINNER_A10_SPI
 config RENESAS_RSPI
     bool
     select SSI
+
+config AVR_SPI
+    bool
+    select SSI
