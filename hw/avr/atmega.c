@@ -20,6 +20,7 @@
 #include "hw/sysbus.h"
 #include "qom/object.h"
 #include "hw/misc/unimp.h"
+#include "hw/ssi/avr_spi.h"
 #include "migration/vmstate.h"
 #include "atmega.h"
 
@@ -30,6 +31,7 @@ enum AtmegaPeripheral {
     USART0, USART1, USART2, USART3,
     TIMER0, TIMER1, TIMER2, TIMER3, TIMER4, TIMER5,
     TWI,
+    SPI,
     PERIFMAX
 };
 
@@ -78,6 +80,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOC]         = {  0x26 },
     [GPIOB]         = {  0x23 },
     [TWI]           = {  0xb8, POWER0, 7},
+    [SPI]           = {  0x4c, POWER0, 2},
 },dev164_1284[PERIFMAX] = {
     [USART1]        = {  0xc8, POWER0, 4 },
     [USART0]        = {  0xc0, POWER0, 1 },
@@ -92,6 +95,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOB]         = {  0x23 },
     [GPIOA]         = {  0x20 },
     [TWI]           = {  0xb8, POWER0, 7},
+    [SPI]           = {  0x4c, POWER0, 2},
 }, dev1280_2560[PERIFMAX] = {
     [USART3]        = { 0x130, POWER1, 2 },
     [TIMER5]        = { 0x120, POWER1, 5, 0x73, 0x3a, true },
@@ -117,6 +121,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOB]         = {  0x23 },
     [GPIOA]         = {  0x20 },
     [TWI]           = {  0xb8, POWER0, 7},
+    [SPI]           = {  0x4c, POWER0, 2},
 };
 
 enum AtmegaIrq {
@@ -137,6 +142,7 @@ enum AtmegaIrq {
     TIMER5_CAPT_IRQ, TIMER5_COMPA_IRQ, TIMER5_COMPB_IRQ,
         TIMER5_COMPC_IRQ, TIMER5_OVF_IRQ,
         TWI_IRQ,
+    SPI_IRQ,
     IRQ_COUNT
 };
 
@@ -166,6 +172,7 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART0_DRE_IRQ]        = 20,
     [USART0_TXC_IRQ]        = 21,
     [TWI_IRQ]               = 25,
+    [SPI_IRQ]               = 18,
 },irq164_1284[IRQ_COUNT] = {
     [TIMER2_COMPA_IRQ]      = 10,
     [TIMER2_COMPB_IRQ]      = 11,
@@ -181,6 +188,7 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART0_DRE_IRQ]        = 22,
     [USART0_TXC_IRQ]        = 23,
     [TWI_IRQ]               = 27,
+    [SPI_IRQ]               = 20,
     [USART1_RXC_IRQ]        = 29,
     [USART1_DRE_IRQ]        = 30,
     [USART1_TXC_IRQ]        = 31,
@@ -208,6 +216,7 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART1_DRE_IRQ]        = 38,
     [USART1_TXC_IRQ]        = 39,
     [TWI_IRQ]               = 40,
+    [SPI_IRQ]               = 25,
     [TIMER4_CAPT_IRQ]       = 42,
     [TIMER4_COMPA_IRQ]      = 43,
     [TIMER4_COMPB_IRQ]      = 44,
@@ -429,7 +438,17 @@ static void atmega_realize(DeviceState *dev, Error **errp)
     create_unimplemented_device("avr-adc",          OFFSET_DATA + 0x078, 8);
     create_unimplemented_device("avr-ext-mem-ctrl", OFFSET_DATA + 0x074, 2);
     create_unimplemented_device("avr-watchdog",     OFFSET_DATA + 0x060, 1);
-    create_unimplemented_device("avr-spi",          OFFSET_DATA + 0x04c, 3);
+    /* SPI */
+    if (mc->dev[SPI].addr) {
+        object_initialize_child(OBJECT(dev), "spi", &s->spi, TYPE_AVR_SPI);
+        sbd = SYS_BUS_DEVICE(&s->spi);
+        sysbus_realize(sbd, &error_abort);
+        sysbus_mmio_map(sbd, 0, OFFSET_DATA + mc->dev[SPI].addr);
+        connect_peripheral_irq(mc, sbd, 0, cpudev, SPI_IRQ);
+        connect_power_reduction_gpio(s, mc, DEVICE(&s->spi), SPI);
+    } else {
+        create_unimplemented_device("avr-spi",      OFFSET_DATA + 0x04c, 3);
+    }
     create_unimplemented_device("avr-eeprom",       OFFSET_DATA + 0x03f, 3);
 }
 

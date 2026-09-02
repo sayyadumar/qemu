@@ -15,6 +15,7 @@
 #include "hw/i2c/avr_twi.h"
 #include "hw/timer/avr_timer16.h"
 #include "hw/misc/avr_power.h"
+#include "hw/ssi/avr_spi.h"
 #include "target/avr/cpu.h"
 #include "qom/object.h"
 
@@ -49,6 +50,7 @@ struct AtmegaMcuState {
     MemoryRegion sram_io;
     DeviceState *io;
     AVRMaskState pwr[POWER_MAX];
+    AVRSPIState spi;
     AVRUsartState usart[USART_MAX];
     AVRTimer16State timer[TIMER_MAX];
     AVRTWIState twi;
