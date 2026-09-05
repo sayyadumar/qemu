@@ -22,6 +22,7 @@
 #define QEMU_AVR_CPU_H
 
 #include "cpu-qom.h"
+#include "hw/irq.h"
 #include "exec/cpu-common.h"
 #include "exec/cpu-defs.h"
 #include "exec/cpu-interrupt.h"
@@ -155,6 +156,9 @@ struct ArchCPU {
 
     MemoryRegion cpu_reg1;
     MemoryRegion cpu_reg2;
+
+    /* Pulsed by the WDR instruction, for a watchdog to listen on. */
+    qemu_irq wdr_irq;
 
     /* Initial value of stack pointer */
     uint32_t init_sp;

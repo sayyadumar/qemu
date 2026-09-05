@@ -25,5 +25,8 @@ config ALLWINNER_WDT
     bool
     select PTIMER
 
+config AVR_WDT
+    bool
+
 config RENESAS_RX_WDT
     bool

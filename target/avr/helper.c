@@ -28,6 +28,8 @@
 #include "exec/target_page.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "exec/helper-proto.h"
+#include "hw/irq.h"
+#include "qemu/main-loop.h"
 
 bool avr_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
@@ -190,7 +192,15 @@ void helper_break(CPUAVRState *env)
 
 void helper_wdr(CPUAVRState *env)
 {
-    qemu_log_mask(LOG_UNIMP, "WDG reset (not implemented)\n");
+    AVRCPU *cpu = env_archcpu(env);
+
+    /*
+     * Restart whatever watchdog is wired up.  Nothing is on some machines,
+     * in which case the instruction is a no-op, as it is on a part whose
+     * watchdog is not running.
+     */
+    BQL_LOCK_GUARD();
+    qemu_irq_pulse(cpu->wdr_irq);
 }
 
 /*

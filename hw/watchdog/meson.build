@@ -10,3 +10,4 @@ system_ss.add(when: 'CONFIG_WDT_SBSA', if_true: files('sbsa_gwdt.c'))
 specific_ss.add(when: 'CONFIG_PSERIES', if_true: files('spapr_watchdog.c'))
 
 system_ss.add(when: 'CONFIG_RENESAS_RX_WDT', if_true: files('renesas_rx_wdt.c'))
+system_ss.add(when: 'CONFIG_AVR_WDT', if_true: files('avr_wdt.c'))

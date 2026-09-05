@@ -180,6 +180,8 @@ static void avr_cpu_initfn(Object *obj)
     /* Set the number of interrupts supported by the CPU. */
     qdev_init_gpio_in(DEVICE(cpu), avr_cpu_set_int,
                       sizeof(cpu->env.intsrc) * 8);
+    /* WDR has no effect unless a watchdog is listening for it. */
+    qdev_init_gpio_out_named(DEVICE(cpu), &cpu->wdr_irq, "wdr", 1);
 }
 
 static const Property avr_cpu_properties[] = {
