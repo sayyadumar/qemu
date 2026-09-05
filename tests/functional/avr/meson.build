@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 tests_avr_system_quick = [
+  'adc',
+  'eeprom',
   'spi',
+  'timer8',
+  'wdt',
 ]
 
 tests_avr_system_thorough = [

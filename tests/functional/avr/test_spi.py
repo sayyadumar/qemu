@@ -148,7 +148,7 @@ class Asm:
         self.subi(R_TMP, 0xD0)          # += 0x30, i.e. '0'
         self.cpi(R_TMP, ord('9') + 1)
         self.brlo(1)                    # already a decimal digit
-        self.subi(R_TMP, 0xF9)          # += 7, i.e. 'a' - '9' - 1
+        self.subi(R_TMP, 0xD9)          # += 39, i.e. 'a' - '9' - 1
         return self.sts(UDR0, R_TMP)
 
     def puthex(self, r):
