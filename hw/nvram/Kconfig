@@ -13,6 +13,9 @@ config MAC_NVRAM
 config NMC93XX_EEPROM
     bool
 
+config AVR_EEPROM
+    bool
+
 config CHRP_NVRAM
     bool
 
