@@ -1,3 +1,6 @@
+config AVR_ADC
+    bool
+
 config STM32F2XX_ADC
     bool
 
