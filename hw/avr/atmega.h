@@ -14,7 +14,11 @@
 #include "hw/char/avr_usart.h"
 #include "hw/i2c/avr_twi.h"
 #include "hw/timer/avr_timer16.h"
+#include "hw/timer/avr_timer8.h"
 #include "hw/misc/avr_power.h"
+#include "hw/nvram/avr_eeprom.h"
+#include "hw/adc/avr_adc.h"
+#include "hw/watchdog/avr_wdt.h"
 #include "hw/ssi/avr_spi.h"
 #include "target/avr/cpu.h"
 #include "qom/object.h"
@@ -45,7 +49,6 @@ struct AtmegaMcuState {
 
     AVRCPU cpu;
     MemoryRegion flash;
-    MemoryRegion eeprom;
     MemoryRegion sram;
     MemoryRegion sram_io;
     DeviceState *io;
@@ -53,7 +56,11 @@ struct AtmegaMcuState {
     AVRSPIState spi;
     AVRUsartState usart[USART_MAX];
     AVRTimer16State timer[TIMER_MAX];
+    AVRTimer8State timer8[TIMER_MAX];
     AVRTWIState twi;
+    AVREepromState eeprom;
+    AVRWdtState wdt;
+    AVRAdcState adc;
     uint64_t xtal_freq_hz;
 };
 

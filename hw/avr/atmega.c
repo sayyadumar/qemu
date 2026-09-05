@@ -21,6 +21,11 @@
 #include "qom/object.h"
 #include "hw/misc/unimp.h"
 #include "hw/ssi/avr_spi.h"
+#include "hw/adc/avr_adc.h"
+#include "hw/watchdog/avr_wdt.h"
+#include "system/blockdev.h"
+#include "system/reset.h"
+#include "system/block-backend.h"
 #include "migration/vmstate.h"
 #include "atmega.h"
 
@@ -32,6 +37,7 @@ enum AtmegaPeripheral {
     TIMER0, TIMER1, TIMER2, TIMER3, TIMER4, TIMER5,
     TWI,
     SPI,
+    ADC,
     PERIFMAX
 };
 
@@ -48,6 +54,8 @@ typedef struct {
     uint16_t intmask_addr;
     uint16_t intflag_addr;
     bool is_timer16;
+    /* TIMER2 encodes a different, denser, set of prescalers. */
+    bool alt_prescaler;
 } peripheral_cfg;
 
 struct AtmegaMcuClass {
@@ -72,7 +80,7 @@ DECLARE_CLASS_CHECKERS(AtmegaMcuClass, ATMEGA_MCU,
 
 static const peripheral_cfg dev168_328[PERIFMAX] = {
     [USART0]        = {  0xc0, POWER0, 1 },
-    [TIMER2]        = {  0xb0, POWER0, 6, 0x70, 0x37, false },
+    [TIMER2]        = {  0xb0, POWER0, 6, 0x70, 0x37, false, true },
     [TIMER1]        = {  0x80, POWER0, 3, 0x6f, 0x36, true },
     [POWER0]        = {  0x64 },
     [TIMER0]        = {  0x44, POWER0, 5, 0x6e, 0x35, false },
@@ -81,11 +89,12 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOB]         = {  0x23 },
     [TWI]           = {  0xb8, POWER0, 7},
     [SPI]           = {  0x4c, POWER0, 2},
+    [ADC]           = {  0x78, POWER0, 0},
 },dev164_1284[PERIFMAX] = {
     [USART1]        = {  0xc8, POWER0, 4 },
     [USART0]        = {  0xc0, POWER0, 1 },
     [TIMER3]        = {  0x90, POWER1, 0, 0x71, 0x38, true },
-    [TIMER2]        = {  0xb0, POWER0, 6, 0x70, 0x37, false },
+    [TIMER2]        = {  0xb0, POWER0, 6, 0x70, 0x37, false, true },
     [TIMER1]        = {  0x80, POWER0, 3, 0x6f, 0x36, true },
     [POWER1]        = {  0x65 },
     [POWER0]        = {  0x64 },
@@ -96,6 +105,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOA]         = {  0x20 },
     [TWI]           = {  0xb8, POWER0, 7},
     [SPI]           = {  0x4c, POWER0, 2},
+    [ADC]           = {  0x78, POWER0, 0},
 }, dev1280_2560[PERIFMAX] = {
     [USART3]        = { 0x130, POWER1, 2 },
     [TIMER5]        = { 0x120, POWER1, 5, 0x73, 0x3a, true },
@@ -106,7 +116,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [USART2]        = {  0xd0, POWER1, 1 },
     [USART1]        = {  0xc8, POWER1, 0 },
     [USART0]        = {  0xc0, POWER0, 1 },
-    [TIMER2]        = {  0xb0, POWER0, 6, 0x70, 0x37, false }, /* TODO async */
+    [TIMER2]        = {  0xb0, POWER0, 6, 0x70, 0x37, false, true }, /* TODO async clocking */
     [TIMER4]        = {  0xa0, POWER1, 4, 0x72, 0x39, true },
     [TIMER3]        = {  0x90, POWER1, 3, 0x71, 0x38, true },
     [TIMER1]        = {  0x80, POWER0, 3, 0x6f, 0x36, true },
@@ -122,6 +132,7 @@ static const peripheral_cfg dev168_328[PERIFMAX] = {
     [GPIOA]         = {  0x20 },
     [TWI]           = {  0xb8, POWER0, 7},
     [SPI]           = {  0x4c, POWER0, 2},
+    [ADC]           = {  0x78, POWER0, 0},
 };
 
 enum AtmegaIrq {
@@ -143,6 +154,9 @@ enum AtmegaIrq {
         TIMER5_COMPC_IRQ, TIMER5_OVF_IRQ,
         TWI_IRQ,
     SPI_IRQ,
+    EE_READY_IRQ,
+    WDT_IRQ,
+    ADC_IRQ,
     IRQ_COUNT
 };
 
@@ -173,6 +187,9 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART0_TXC_IRQ]        = 21,
     [TWI_IRQ]               = 25,
     [SPI_IRQ]               = 18,
+    [EE_READY_IRQ]          = 23,
+    [WDT_IRQ]               = 7,
+    [ADC_IRQ]               = 22,
 },irq164_1284[IRQ_COUNT] = {
     [TIMER2_COMPA_IRQ]      = 10,
     [TIMER2_COMPB_IRQ]      = 11,
@@ -189,6 +206,9 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART0_TXC_IRQ]        = 23,
     [TWI_IRQ]               = 27,
     [SPI_IRQ]               = 20,
+    [EE_READY_IRQ]          = 26,
+    [WDT_IRQ]               = 9,
+    [ADC_IRQ]               = 25,
     [USART1_RXC_IRQ]        = 29,
     [USART1_DRE_IRQ]        = 30,
     [USART1_TXC_IRQ]        = 31,
@@ -217,6 +237,9 @@ static const uint8_t irq168_328[IRQ_COUNT] = {
     [USART1_TXC_IRQ]        = 39,
     [TWI_IRQ]               = 40,
     [SPI_IRQ]               = 25,
+    [EE_READY_IRQ]          = 31,
+    [WDT_IRQ]               = 13,
+    [ADC_IRQ]               = 30,
     [TIMER4_CAPT_IRQ]       = 42,
     [TIMER4_COMPA_IRQ]      = 43,
     [TIMER4_COMPB_IRQ]      = 44,
@@ -264,12 +287,18 @@ static void connect_power_reduction_gpio(AtmegaMcuState *s,
                        qdev_get_gpio_in(cpu, 0));
 }
 
+static void atmega_cpu_reset(void *opaque)
+{
+    cpu_reset(CPU(opaque));
+}
+
 static void atmega_realize(DeviceState *dev, Error **errp)
 {
     AtmegaMcuState *s = ATMEGA_MCU(dev);
     const AtmegaMcuClass *mc = ATMEGA_MCU_GET_CLASS(dev);
     DeviceState *cpudev;
     SysBusDevice *sbd;
+    DriveInfo *dinfo;
     char *devname;
     size_t i;
 
@@ -286,6 +315,11 @@ static void atmega_realize(DeviceState *dev, Error **errp)
 
     qdev_realize(DEVICE(&s->cpu), NULL, &error_abort);
     cpudev = DEVICE(&s->cpu);
+    /*
+     * The CPU is not on a bus, so a system reset does not reach it through
+     * the device tree the way it reaches everything else here.
+     */
+    qemu_register_reset(atmega_cpu_reset, &s->cpu);
 
     /*
      * SRAM
@@ -391,14 +425,24 @@ static void atmega_realize(DeviceState *dev, Error **errp)
             continue;
         }
         if (!mc->dev[idx].is_timer16) {
-            create_unimplemented_device("avr-timer8",
-                                        OFFSET_DATA + mc->dev[idx].addr, 5);
-            create_unimplemented_device("avr-timer8-intmask",
-                                        OFFSET_DATA
-                                        + mc->dev[idx].intmask_addr, 1);
-            create_unimplemented_device("avr-timer8-intflag",
-                                        OFFSET_DATA
-                                        + mc->dev[idx].intflag_addr, 1);
+            devname = g_strdup_printf("timer%zu", i);
+            object_initialize_child(OBJECT(dev), devname, &s->timer8[i],
+                                    TYPE_AVR_TIMER8);
+            object_property_set_uint(OBJECT(&s->timer8[i]), "cpu-frequency-hz",
+                                     s->xtal_freq_hz, &error_abort);
+            object_property_set_bool(OBJECT(&s->timer8[i]), "alt-prescaler",
+                                     mc->dev[idx].alt_prescaler,
+                                     &error_abort);
+            sbd = SYS_BUS_DEVICE(&s->timer8[i]);
+            sysbus_realize(sbd, &error_abort);
+            sysbus_mmio_map(sbd, 0, OFFSET_DATA + mc->dev[idx].addr);
+            sysbus_mmio_map(sbd, 1, OFFSET_DATA + mc->dev[idx].intmask_addr);
+            sysbus_mmio_map(sbd, 2, OFFSET_DATA + mc->dev[idx].intflag_addr);
+            connect_peripheral_irq(mc, sbd, 0, cpudev, TIMER_COMPA_IRQ(i));
+            connect_peripheral_irq(mc, sbd, 1, cpudev, TIMER_COMPB_IRQ(i));
+            connect_peripheral_irq(mc, sbd, 2, cpudev, TIMER_OVF_IRQ(i));
+            connect_power_reduction_gpio(s, mc, DEVICE(&s->timer8[i]), idx);
+            g_free(devname);
             continue;
         }
         devname = g_strdup_printf("timer%zu", i);
@@ -435,9 +479,26 @@ static void atmega_realize(DeviceState *dev, Error **errp)
             g_free(devname);
         }
     }
-    create_unimplemented_device("avr-adc",          OFFSET_DATA + 0x078, 8);
+    /* ADC */
+    object_initialize_child(OBJECT(dev), "adc", &s->adc, TYPE_AVR_ADC);
+    object_property_set_uint(OBJECT(&s->adc), "channels", mc->adc_count,
+                             &error_abort);
+    object_property_set_uint(OBJECT(&s->adc), "cpu-frequency-hz",
+                             s->xtal_freq_hz, &error_abort);
+    sbd = SYS_BUS_DEVICE(&s->adc);
+    sysbus_realize(sbd, &error_abort);
+    sysbus_mmio_map(sbd, 0, OFFSET_DATA + mc->dev[ADC].addr);
+    connect_peripheral_irq(mc, sbd, 0, cpudev, ADC_IRQ);
+    connect_power_reduction_gpio(s, mc, DEVICE(&s->adc), ADC);
     create_unimplemented_device("avr-ext-mem-ctrl", OFFSET_DATA + 0x074, 2);
-    create_unimplemented_device("avr-watchdog",     OFFSET_DATA + 0x060, 1);
+    /* Watchdog */
+    object_initialize_child(OBJECT(dev), "wdt", &s->wdt, TYPE_AVR_WDT);
+    sbd = SYS_BUS_DEVICE(&s->wdt);
+    sysbus_realize(sbd, &error_abort);
+    sysbus_mmio_map(sbd, 0, OFFSET_DATA + 0x060);
+    connect_peripheral_irq(mc, sbd, 0, cpudev, WDT_IRQ);
+    qdev_connect_gpio_out_named(cpudev, "wdr", 0,
+                                qdev_get_gpio_in(DEVICE(&s->wdt), 0));
     /* SPI */
     if (mc->dev[SPI].addr) {
         object_initialize_child(OBJECT(dev), "spi", &s->spi, TYPE_AVR_SPI);
@@ -449,7 +510,19 @@ static void atmega_realize(DeviceState *dev, Error **errp)
     } else {
         create_unimplemented_device("avr-spi",      OFFSET_DATA + 0x04c, 3);
     }
-    create_unimplemented_device("avr-eeprom",       OFFSET_DATA + 0x03f, 3);
+    /* EEPROM */
+    object_initialize_child(OBJECT(dev), "eeprom", &s->eeprom, TYPE_AVR_EEPROM);
+    object_property_set_uint(OBJECT(&s->eeprom), "size", mc->eeprom_size,
+                             &error_abort);
+    dinfo = drive_get(IF_PFLASH, 0, 0);
+    if (dinfo) {
+        qdev_prop_set_drive(DEVICE(&s->eeprom), "drive",
+                            blk_by_legacy_dinfo(dinfo));
+    }
+    sbd = SYS_BUS_DEVICE(&s->eeprom);
+    sysbus_realize(sbd, &error_abort);
+    sysbus_mmio_map(sbd, 0, OFFSET_DATA + 0x03f);
+    connect_peripheral_irq(mc, sbd, 0, cpudev, EE_READY_IRQ);
 }
 
 static const Property atmega_props[] = {
